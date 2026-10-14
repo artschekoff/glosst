@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chromium } from 'playwright';
+import { chromium } from './playwright.js';
 import { pathToFileURL } from 'node:url';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';

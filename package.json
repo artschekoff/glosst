@@ -4,6 +4,6 @@
   "type": "module",
   "scripts": {
     "test": "node --test tests/unit/*.test.js",
-    "test:dom": "node --test tests/dom/*.test.js"
+    "test:dom": "NODE_PATH=$HOME/.local/opt/node/lib/node_modules node --test tests/dom/*.test.js"
   }
 }
