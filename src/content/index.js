@@ -111,6 +111,16 @@ export function start({ doc, settings, ask, getLang, setLang }) {
       const block = closestBlock(node);
       const lang = await resolveLang();
 
+      // Режим абзаца, а блочного предка нет (closestBlock дошла до
+      // <body>, не встретив ни одного подходящего display): единицы
+      // перевода здесь нет. Раньше в этом месте закономерно
+      // подставлялся document.body, и единицей становилась вся
+      // страница — один платный запрос на весь её текст.
+      const noUnitHere = settings.granularity === 'paragraph' && !block;
+      if (noUnitHere) {
+        return;
+      }
+
       // Язык неизвестен — спрашиваем и ничего не переводим. Догадка
       // здесь хуже отказа: при неверном языке поедет нарезка.
       if (!lang) {

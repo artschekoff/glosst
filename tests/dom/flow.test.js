@@ -23,7 +23,7 @@ const BUNDLE = [
 const SETTINGS = `{ granularity: 'sentence', targetLang: 'ru', dwellMs: 100, modifier: 'alt',
                     colorActive: '#ffe08a', colorSeen: '#d9f2d9', colorError: '#ffd6d6' }`;
 
-async function open(browser, { answer, fixture = 'plain.html', savedLang = `'es'` }) {
+async function open(browser, { answer, fixture = 'plain.html', savedLang = `'es'`, settings = SETTINGS }) {
   const page = await browser.newPage();
   await page.goto(pathToFileURL(path.join(here, 'fixtures', fixture)).href);
   await page.addScriptTag({
@@ -31,7 +31,7 @@ async function open(browser, { answer, fixture = 'plain.html', savedLang = `'es'
       window.asked = []; window.savedLang = ${savedLang}; window.setCalls = [];
       window.stop = start({
         doc: document,
-        settings: ${SETTINGS},
+        settings: ${settings},
         ask: async (text, lang) => { window.asked.push({ text, lang }); return (${answer}); },
         getLang: async () => window.savedLang,
         setLang: async (code) => { window.setCalls.push(code); window.savedLang = code; },
@@ -231,5 +231,36 @@ test('та же фраза в другом месте получает отве�
     'подсветка должна стоять на втором абзаце, а не остаться на первом'
   );
 
+  await browser.close();
+});
+
+// closestBlock раньше принимала только block/list-item/table-cell и,
+// не найдя их, доходила до document.body. Текст, завёрнутый в
+// inline-block (частая верстальщицкая обёртка карточек и колонок),
+// именно так и ловился: единицей режима абзаца становилась вся
+// страница — один платный запрос на весь её текст.
+test('режим абзаца внутри inline-block берёт блок, а не всю страницу', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser, {
+    answer: OK,
+    fixture: 'inline-block.html',
+    settings: `{ granularity: 'paragraph', targetLang: 'ru', dwellMs: 100, modifier: 'alt',
+                 colorActive: '#ffe08a', colorSeen: '#d9f2d9', colorError: '#ffd6d6' }`,
+  });
+  const box = await page.locator('#p').boundingBox();
+  await page.keyboard.down('Alt');
+  await page.mouse.move(box.x + 10, box.y + 8);
+  await page.waitForFunction(() => window.asked.length > 0, null, { timeout: 3000 });
+
+  const asked = await page.evaluate(() => window.asked);
+  assert.equal(
+    asked[0].text,
+    'Vino a casa muy tarde, porque el tren se retrasó. Luego cenamos juntos.',
+    'в запрос должен уйти только текст абзаца внутри inline-block'
+  );
+  assert.ok(
+    !asked[0].text.includes('Esto no debe'),
+    'текст соседнего блока страницы не должен попасть в запрос'
+  );
   await browser.close();
 });

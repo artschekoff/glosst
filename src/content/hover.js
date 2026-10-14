@@ -41,19 +41,38 @@ export function rangeAtPoint(doc, x, y) {
   return range;
 }
 
-/** Ближайший блочный предок — единица для режима абзаца. */
+/**
+ * Какие display считаются блочной единицей для режима абзаца.
+ *
+ * inline-block, flex, grid, table и flow-root добавлены не для
+ * полноты: верстальщики сплошь и рядом заворачивают текст абзаца в
+ * такой контейнер (разметка карточек, таблицы макета, flex-колонки), и
+ * без них цикл ниже не находил ничего и уходил до самого body.
+ */
+const BLOCK_DISPLAYS = new Set([
+  'block', 'list-item', 'table-cell', 'inline-block', 'flex', 'grid', 'table', 'flow-root',
+]);
+
+/**
+ * Ближайший блочный предок — единица для режима абзаца.
+ *
+ * Если до document.body дошли, не встретив ни одного подходящего
+ * display, — null, а НЕ body. Body ни разу не единица перевода: это
+ * вся страница целиком, один платный запрос на весь её текст. Вызывающий
+ * обязан воспринять null как «единицы здесь нет», а не переводить его.
+ */
 export function closestBlock(node) {
   let el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
 
   while (el && el !== document.body) {
     const display = getComputedStyle(el).display;
-    if (display === 'block' || display === 'list-item' || display === 'table-cell') {
+    if (BLOCK_DISPLAYS.has(display)) {
       return el;
     }
     el = el.parentElement;
   }
 
-  return el;
+  return null;
 }
 
 /**
