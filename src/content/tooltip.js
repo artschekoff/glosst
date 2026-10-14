@@ -10,6 +10,15 @@
 const CSS_TEXT = `
   :host { all: initial; }
   .body {
+    /*
+     * Тултип не ловит курсор. Он встаёт прямо ПОД разобранной фразой —
+     * то есть на следующей строке текста, куда взгляд и переходит. Без
+     * этого наведение на неё попадает по тултипу, caretRangeFromPoint
+     * не находит текста, и связка гасит подсветку и подсказку: со
+     * стороны выглядит поломкой. Кнопки выбора языка возвращают себе
+     * клики отдельно (.lang ниже).
+     */
+    pointer-events: none;
     position: fixed;
     z-index: 2147483647;
     max-width: 420px;
@@ -30,6 +39,8 @@ const CSS_TEXT = `
   .err { color: #ffb4b4; }
   .ask { margin-bottom: 6px; }
   .lang {
+    /* Кнопкам клики нужны: .body их отключает для всего тултипа. */
+    pointer-events: auto;
     margin: 2px 4px 0 0;
     padding: 4px 10px;
     border: 1px solid rgba(255,255,255,.3);

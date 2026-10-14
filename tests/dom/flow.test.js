@@ -182,3 +182,54 @@ test('с html lang язык берётся молча', async () => {
   assert.deepEqual(await page.evaluate(() => window.setCalls), []);
   await browser.close();
 });
+
+// Одна и та же фраза встречается на странице дважды — повтор в списке,
+// заголовок, реплика, — и это обычное дело, а не редкость. Второе
+// место отделено распоркой, которой хватает, чтобы тултип первого
+// места физически не мог его накрыть, но не настолько высокой, чтобы
+// понадобилась прокрутка: прокрутка сама по себе гасит наведение
+// (см. hover.js), и это увело бы тест в сторону от дедупликации.
+test('та же фраза в другом месте получает ответ, а не тишину', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser, { answer: OK, fixture: 'twice.html' });
+
+  const boxA = await page.locator('#a').boundingBox();
+  await page.keyboard.down('Alt');
+  await page.mouse.move(boxA.x + 30, boxA.y + 10);
+  await page.waitForFunction(() => window.asked.length > 0, null, { timeout: 3000 });
+
+  const boxB = await page.locator('#b').boundingBox();
+  await page.mouse.move(boxB.x + 30, boxB.y + 10);
+
+  // Ждём, пока активная подсветка реально переедет на второй абзац —
+  // не просто появится где-то, а встанет именно там.
+  await page.waitForFunction(
+    (bTop) => {
+      const h = CSS.highlights.get('glosst-active');
+      if (!h || h.size === 0) return false;
+      const [range] = h;
+      return Math.abs(range.getBoundingClientRect().top - bTop) < 5;
+    },
+    boxB.y,
+    { timeout: 3000 }
+  );
+
+  assert.equal(
+    (await page.evaluate(() => window.asked)).length, 1,
+    'ответ уже есть — сеть трогать незачем'
+  );
+
+  const rects = await page.evaluate(() => {
+    const h = CSS.highlights.get('glosst-active');
+    const [range] = h;
+    const active = range.getBoundingClientRect();
+    const b = document.getElementById('b').getBoundingClientRect();
+    return { activeTop: active.top, bTop: b.top };
+  });
+  assert.ok(
+    Math.abs(rects.activeTop - rects.bTop) < 5,
+    'подсветка должна стоять на втором абзаце, а не остаться на первом'
+  );
+
+  await browser.close();
+});
