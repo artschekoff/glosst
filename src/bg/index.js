@@ -1,15 +1,31 @@
 import { handleTranslate } from './handler.js';
 import { cacheSweep } from './cache.js';
 import { loadSettings } from './settings.js';
+import { getSiteLang, setSiteLang } from './sitelang.js';
 
 const DAY = 86400000;
 
+const ROUTES = {
+  translate: (msg) => handleTranslate(msg, { storage: chrome.storage.local }),
+
+  getSiteLang: async (msg) => ({
+    ok: true,
+    lang: await getSiteLang(chrome.storage.local, msg.origin),
+  }),
+
+  setSiteLang: async (msg) => {
+    await setSiteLang(chrome.storage.local, msg.origin, msg.lang);
+    return { ok: true };
+  },
+};
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg?.type !== 'translate') {
+  const route = ROUTES[msg?.type];
+  if (!route) {
     return false;
   }
 
-  handleTranslate(msg, { storage: chrome.storage.local })
+  route(msg)
     .then(sendResponse)
     .catch((e) => sendResponse({ ok: false, code: 'http', message: String(e) }));
 
