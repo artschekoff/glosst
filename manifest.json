@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Glosst",
+  "version": "0.1.0",
+  "description": "Перевод предложения под курсором по Alt, без изменения страницы.",
+  "permissions": ["storage", "unlimitedStorage", "alarms"],
+  "host_permissions": ["https://api.openai.com/*"],
+  "background": { "service_worker": "src/bg/index.js", "type": "module" },
+  "options_page": "src/options/options.html",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/content/boot.js"],
+      "type": "module",
+      "run_at": "document_idle"
+    }
+  ]
+}
