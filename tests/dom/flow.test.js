@@ -114,6 +114,17 @@ test('ошибка показывается человеку, а не глота
     () => document.querySelector('glosst-tip')?.shadowRoot.textContent.includes('баланс'),
     null, { timeout: 3000 }
   );
+
+  // Отпускаем Alt — onCancel обязан убрать не только активную подсветку,
+  // но и слой ошибки. clearError существовал и раньше, но его никто не
+  // звал: красная полоса на месте ошибочного перевода оставалась на весь
+  // сеанс, даже после отмены наведения.
+  await page.keyboard.up('Alt');
+  await page.waitForFunction(
+    () => (CSS.highlights.get('glosst-error')?.size ?? 0) === 0,
+    null, { timeout: 3000 }
+  );
+
   await browser.close();
 });
 

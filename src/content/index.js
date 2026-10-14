@@ -1,6 +1,6 @@
 import { unitBounds } from './segment.js';
 import { pageLang, LANG_CHOICES } from './lang.js';
-import { installStyles, markActive, markSeen, markError, clearActive } from './highlight.js';
+import { installStyles, markActive, markSeen, markError, clearActive, clearError } from './highlight.js';
 import { rangeAtPoint, closestBlock, watchDwell } from './hover.js';
 import { createTooltip } from './tooltip.js';
 
@@ -93,6 +93,7 @@ export function start({ doc, settings, ask, getLang, setLang }) {
 
     onCancel() {
       clearActive();
+      clearError();
       tip.hide();
       lastText = null;
       lastAnswer = null;
@@ -115,6 +116,7 @@ export function start({ doc, settings, ask, getLang, setLang }) {
     const caret = rangeAtPoint(doc, x, y);
     if (!caret) {
       clearActive();
+      clearError();
       tip.hide();
       lastText = null;
       return;
@@ -174,6 +176,7 @@ export function start({ doc, settings, ask, getLang, setLang }) {
     stop();
     tip.destroy();
     clearActive();
+    clearError();
   };
 }
 
