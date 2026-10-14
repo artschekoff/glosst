@@ -15,7 +15,17 @@ export function readForm(doc) {
   for (const id of TEXT) out[id] = doc.getElementById(id).value;
   // Поля number отдают строку; в настройках нужны числа, иначе
   // ttlDays * DAY даст строку и срок жизни посчитается неверно.
-  for (const id of NUM) out[id] = Number(doc.getElementById(id).value);
+  //
+  // Опустошённое поле не должно превращаться в 0 — Number('') === 0,
+  // а атрибуты min в разметке никогда не проверяются: формы без submit
+  // браузер не валидирует. ttlDays:0 тут же "просрочивает" весь кэш, и
+  // каждое наведение снова платное; dwellMs:0 стреляет запросом на
+  // любое шевеление мыши. При нечисловом или неположительном значении
+  // падаем на умолчание — оно уже импортировано из settings.js.
+  for (const id of NUM) {
+    const n = Number(doc.getElementById(id).value);
+    out[id] = Number.isFinite(n) && n > 0 ? n : DEFAULTS[id];
+  }
   out.wantNote = doc.getElementById('wantNote').checked;
   return out;
 }

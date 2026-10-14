@@ -8,13 +8,16 @@ import path from 'node:path';
 const here = path.dirname(new URL(import.meta.url).pathname);
 const root = path.join(here, '../..');
 const page_ = pathToFileURL(path.join(root, 'src/options/options.html')).href;
-const source = readFileSync(path.join(root, 'src/options/options.js'), 'utf8')
-  .replace(/^(export |import .*\n)/gm, '');
+const strip = (p) => readFileSync(path.join(root, p), 'utf8').replace(/^(export |import .*\n)/gm, '');
+// settings.js подключаем первым: readForm обращается к DEFAULTS для
+// клампа пустых числовых полей, а import-строка сама по себе из
+// склейки вырезается.
+const source = strip('src/bg/settings.js') + '\n' + strip('src/options/options.js');
 
 async function open(browser) {
   const page = await browser.newPage();
   await page.goto(page_);
-  await page.addScriptTag({ content: source + '\nwindow.F = { fillForm, readForm };', type: 'module' });
+  await page.addScriptTag({ content: source + '\nwindow.F = { fillForm, readForm, DEFAULTS };', type: 'module' });
   await page.waitForFunction(() => !!window.F);
   return page;
 }
@@ -117,5 +120,24 @@ test('числовые поля не перепутаны местами', async
   });
   assert.equal(vals.dwell, '111');
   assert.equal(vals.ttl, '222');
+  await browser.close();
+});
+
+// Number('') === 0, а markup min= никогда не проверяется — формы без
+// submit браузер не валидирует. ttlDays:0 "просрочивает" весь кэш
+// немедленно (каждое наведение снова платное), dwellMs:0 стреляет
+// запросом на любое шевеление мыши без паузы.
+test('опустошённое числовое поле возвращается умолчанием, а не нулём', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser);
+  const out = await page.evaluate(() => {
+    document.getElementById('dwellMs').value = '';
+    document.getElementById('ttlDays').value = '';
+    return window.F.readForm(document);
+  });
+  assert.equal(out.dwellMs, (await page.evaluate(() => window.F.DEFAULTS.dwellMs)));
+  assert.equal(out.ttlDays, (await page.evaluate(() => window.F.DEFAULTS.ttlDays)));
+  assert.notEqual(out.dwellMs, 0);
+  assert.notEqual(out.ttlDays, 0);
   await browser.close();
 });
