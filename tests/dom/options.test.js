@@ -98,3 +98,24 @@ test('числовые поля приходят числами, а не стр�
   assert.equal(t, 'number');
   await browser.close();
 });
+
+// Круговой тест (fillForm → readForm) не различает перестановку двух
+// числовых полей местами: если обе функции спутают id одинаково, round
+// trip всё равно сойдётся. Проверяем DOM после fillForm напрямую, минуя
+// readForm, — так перестановка dwellMs/ttlDays видна.
+test('числовые поля не перепутаны местами', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser);
+  const vals = await page.evaluate(() => {
+    window.F.fillForm(document, { apiKey: '', model: 'm', targetLang: 'ru',
+      granularity: 'sentence', modifier: 'alt', dwellMs: 111, ttlDays: 222, wantNote: true,
+      colorActive: '#ffe08a', colorSeen: '#d9f2d9', colorError: '#ffd6d6' });
+    return {
+      dwell: document.getElementById('dwellMs').value,
+      ttl: document.getElementById('ttlDays').value,
+    };
+  });
+  assert.equal(vals.dwell, '111');
+  assert.equal(vals.ttl, '222');
+  await browser.close();
+});
