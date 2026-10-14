@@ -98,65 +98,77 @@ export function start({ doc, settings, ask, getLang, setLang }) {
       lastAnswer = null;
     },
 
-    async onDwell({ x, y }) {
-      const caret = rangeAtPoint(doc, x, y);
-      if (!caret) {
-        clearActive();
-        tip.hide();
-        lastText = null;
-        return;
+    async onDwell(point) {
+      try {
+        await handleDwell(point);
+      } catch (err) {
+        // watchDwell зовёт onDwell из setTimeout: без try/catch здесь
+        // неожиданный сбой (DOM-исключение, обрыв связи с воркером)
+        // улетел бы необработанным отклонением и завис тултип в уже
+        // неактуальном состоянии, не дав ни ошибки, ни результата.
+        console.error('glosst: onDwell упал', err);
       }
-
-      const node = caret.startContainer;
-      const block = closestBlock(node);
-      const lang = await resolveLang();
-
-      // Режим абзаца, а блочного предка нет (closestBlock дошла до
-      // <body>, не встретив ни одного подходящего display): единицы
-      // перевода здесь нет. Раньше в этом месте закономерно
-      // подставлялся document.body, и единицей становилась вся
-      // страница — один платный запрос на весь её текст.
-      const noUnitHere = settings.granularity === 'paragraph' && !block;
-      if (noUnitHere) {
-        return;
-      }
-
-      // Язык неизвестен — спрашиваем и ничего не переводим. Догадка
-      // здесь хуже отказа: при неверном языке поедет нарезка.
-      if (!lang) {
-        const probe = doc.createRange();
-        probe.selectNodeContents(block ?? node.parentElement);
-
-        tip.showLanguagePicker(probe.getBoundingClientRect(), LANG_CHOICES, async (code) => {
-          await setLang(code);
-          lastText = null;
-          // Человек уже навёл на нужное место — продолжаем с него же,
-          // не заставляя наводить заново.
-          const again = rangeAtPoint(doc, x, y);
-          if (again) {
-            const b = unitBounds(again.startContainer.textContent, again.startOffset, {
-              granularity: settings.granularity,
-              lang: code,
-            });
-            if (b) {
-              await translateRange(buildRange(doc, again.startContainer, b, block, settings), code);
-            }
-          }
-        });
-        return;
-      }
-
-      const bounds = unitBounds(node.textContent, caret.startOffset, {
-        granularity: settings.granularity,
-        lang,
-      });
-      if (!bounds) {
-        return;
-      }
-
-      await translateRange(buildRange(doc, node, bounds, block, settings), lang);
     },
   });
+
+  async function handleDwell({ x, y }) {
+    const caret = rangeAtPoint(doc, x, y);
+    if (!caret) {
+      clearActive();
+      tip.hide();
+      lastText = null;
+      return;
+    }
+
+    const node = caret.startContainer;
+    const block = closestBlock(node);
+    const lang = await resolveLang();
+
+    // Режим абзаца, а блочного предка нет (closestBlock дошла до
+    // <body>, не встретив ни одного подходящего display): единицы
+    // перевода здесь нет. Раньше в этом месте закономерно
+    // подставлялся document.body, и единицей становилась вся
+    // страница — один платный запрос на весь её текст.
+    const noUnitHere = settings.granularity === 'paragraph' && !block;
+    if (noUnitHere) {
+      return;
+    }
+
+    // Язык неизвестен — спрашиваем и ничего не переводим. Догадка
+    // здесь хуже отказа: при неверном языке поедет нарезка.
+    if (!lang) {
+      const probe = doc.createRange();
+      probe.selectNodeContents(block ?? node.parentElement);
+
+      tip.showLanguagePicker(probe.getBoundingClientRect(), LANG_CHOICES, async (code) => {
+        await setLang(code);
+        lastText = null;
+        // Человек уже навёл на нужное место — продолжаем с него же,
+        // не заставляя наводить заново.
+        const again = rangeAtPoint(doc, x, y);
+        if (again) {
+          const b = unitBounds(again.startContainer.textContent, again.startOffset, {
+            granularity: settings.granularity,
+            lang: code,
+          });
+          if (b) {
+            await translateRange(buildRange(doc, again.startContainer, b, block, settings), code);
+          }
+        }
+      });
+      return;
+    }
+
+    const bounds = unitBounds(node.textContent, caret.startOffset, {
+      granularity: settings.granularity,
+      lang,
+    });
+    if (!bounds) {
+      return;
+    }
+
+    await translateRange(buildRange(doc, node, bounds, block, settings), lang);
+  }
 
   return () => {
     stop();
