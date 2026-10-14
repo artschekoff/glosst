@@ -29,14 +29,20 @@ test('подсветка не меняет разметку страницы', a
   const page = await open(browser);
 
   const before = await page.$eval('#p', (el) => el.outerHTML);
-  await page.evaluate(() => {
+  const applied = await page.evaluate(() => {
     const tn = document.getElementById('p').firstChild;
     const r = new Range(); r.setStart(tn, 0); r.setEnd(tn, 10);
     window.H.installStyles({ active: '#ffe08a', seen: '#d9f2d9', error: '#ffd6d6' });
     window.H.markActive(r);
+    return CSS.highlights.get('glosst-active')?.size ?? 0;
   });
   const after = await page.$eval('#p', (el) => el.outerHTML);
 
+  // Сперва убеждаемся, что подсветка ВООБЩЕ встала. Без этой строки
+  // тест доказывал бы лишь «ничего не делали — ничего не изменилось»,
+  // что верно и для пустышки: проверено, с markActive-заглушкой
+  // прежняя редакция теста проходила. А это главный тест проекта.
+  assert.equal(applied, 1, 'подсветка должна была встать');
   assert.equal(after, before, 'разметка обязана остаться побайтово прежней');
   await browser.close();
 });
