@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<title>Glosst — настройки</title>
+<style>
+  body { font: 14px/1.6 -apple-system, "Segoe UI", Roboto, sans-serif; max-width: 560px; margin: 24px auto; padding: 0 16px; }
+  label { display: block; margin: 14px 0 4px; font-weight: 600; }
+  input, select { width: 100%; padding: 6px 8px; font: inherit; box-sizing: border-box; }
+  input[type=checkbox] { width: auto; }
+  input[type=color] { height: 34px; padding: 2px; }
+  .hint { color: #666; font-weight: 400; font-size: 13px; }
+  .row { display: flex; gap: 12px; }
+  .row > div { flex: 1; }
+  button { margin-top: 20px; padding: 8px 16px; font: inherit; }
+  #saved { margin-left: 10px; color: #2a7; }
+</style>
+
+<h1>Glosst</h1>
+
+<label for="apiKey">Ключ OpenAI <span class="hint">хранится только в этом браузере</span></label>
+<input id="apiKey" type="password" placeholder="sk-…">
+
+<label for="model">Модель <span class="hint">можно выбрать из списка или вписать своё название</span></label>
+<input id="model" list="models" placeholder="gpt-4o-mini">
+<datalist id="models">
+  <option value="gpt-4o-mini"></option>
+  <option value="gpt-4o"></option>
+  <option value="gpt-4.1-mini"></option>
+</datalist>
+
+<label for="targetLang">Переводить на</label>
+<input id="targetLang" placeholder="ru">
+
+<label for="granularity">Что брать под курсором</label>
+<select id="granularity">
+  <option value="sentence">Предложение</option>
+  <option value="paragraph">Абзац</option>
+</select>
+
+<label for="modifier">Клавиша вызова <span class="hint">без неё тултипы выскакивают при обычном чтении</span></label>
+<select id="modifier">
+  <option value="alt">Alt</option>
+  <option value="ctrl">Ctrl</option>
+  <option value="shift">Shift</option>
+  <option value="none">Без клавиши</option>
+</select>
+
+<div class="row">
+  <div>
+    <label for="dwellMs">Задержка, мс</label>
+    <input id="dwellMs" type="number" min="100" max="2000" step="50">
+  </div>
+  <div>
+    <label for="ttlDays">Хранить переводы, дней</label>
+    <input id="ttlDays" type="number" min="1" max="365">
+  </div>
+</div>
+
+<label><input id="wantNote" type="checkbox"> Пояснять грамматику и идиомы</label>
+
+<div class="row">
+  <div><label for="colorActive">Под курсором</label><input id="colorActive" type="color"></div>
+  <div><label for="colorSeen">Уже переведено</label><input id="colorSeen" type="color"></div>
+  <div><label for="colorError">Ошибка</label><input id="colorError" type="color"></div>
+</div>
+
+<button id="save">Сохранить</button><span id="saved" hidden>Сохранено</span>
+<button id="clearCache">Очистить кэш переводов</button>
+<button id="clearLangs">Забыть выбранные языки сайтов</button>
+
+<script type="module" src="options.js"></script>
+</html>
