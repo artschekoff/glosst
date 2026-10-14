@@ -1,0 +1,2669 @@
+# Подсказка — план реализации
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Расширение Chrome, которое по задержке курсора переводит предложение или абзац под ним, не изменяя разметку страницы.
+
+**Architecture:** Контент-скрипт ничего не трогает на странице: единица под курсором вычисляется в момент наведения через `caretRangeFromPoint` + `Intl.Segmenter`, подсвечивается через CSS Custom Highlight API. Сеть и ключ API живут только в фоновом воркере, он же держит кэш переводов в `chrome.storage.local`. Между ними — одно сообщение `translate`.
+
+**Tech Stack:** Chrome MV3, чистый ES-модульный JavaScript без сборщика. Тесты: `node --test` (встроенный, без зависимостей) для чистых функций, Playwright для поведения на странице.
+
+**Spec:** `docs/superpowers/specs/2026-10-14-podskazka-design.md`
+
+## Global Constraints
+
+- Manifest V3. Только Chrome; Firefox и Safari не поддерживаются сознательно.
+- Разметка страницы после работы расширения обязана быть **побайтово прежней**. Любая задача, которая оборачивает текст в теги, противоречит спеке.
+- Ни одного сетевого запроса, пока человек просто читает. Запрос уходит только после задержки курсора.
+- Контент-скрипт **никогда** не видит ключ API и не обращается в сеть.
+- Хранилище — `chrome.storage.local` с `unlimitedStorage`. `localStorage` запрещён: контент-скрипт видит хранилище чужой страницы.
+- Ключ кэша — хэш от `текст + язык-цель + модель`. URL в ключ не входит.
+- Модель по умолчанию `gpt-4o-mini`, переключаемая, с возможностью вписать своё название.
+- Тесты не ходят в сеть. Единственный живой вызов — по флагу `PODSKAZKA_LIVE=1`.
+- Код и комментарии на русском, как в остальных репозиториях владельца.
+- Запуск Playwright на этой машине требует `NODE_PATH=$HOME/.local/opt/node/lib/node_modules`.
+
+---
+
+## Структура файлов
+
+```
+manifest.json              — MV3: разрешения, контент-скрипт, воркер, страница настроек
+package.json               — { "type": "module" }, скрипты test / test:dom
+
+src/content/segment.js     — чистая нарезка: текст + смещение + режим → {start,end}
+src/content/highlight.js   — слои подсветки поверх CSS Custom Highlight API
+src/content/hover.js       — задержка курсора, точка → Range, поиск блока
+src/content/tooltip.js     — тултип в shadow DOM
+src/content/index.js       — связка контент-скрипта
+
+src/bg/cachekey.js         — чистая: хэш ключа кэша
+src/bg/cache.js            — чтение/запись/срок жизни поверх внедряемого хранилища
+src/bg/prompt.js           — чистая: сборка тела запроса и разбор ответа
+src/bg/translate.js        — сеть и классификация ошибок
+src/bg/settings.js         — умолчания и чтение настроек
+src/bg/index.js            — приём сообщений, порядок «кэш → сеть → кэш»
+
+src/options/options.html   — страница настроек
+src/options/options.js     — чтение и запись настроек
+
+tests/unit/*.test.js       — node --test
+tests/dom/*.test.js        — Playwright
+tests/dom/fixtures/*.html  — страницы для проверок
+```
+
+Деление по ответственности, а не по слою: `segment.js` ничего не знает о DOM и проверяется в Node, `highlight.js` ничего не знает о переводе, `translate.js` ничего не знает о странице.
+
+---
+
+### Task 1: Каркас проекта и нарезка на единицы
+
+Нарезка — сердце расширения, с неё и начинаем. Она чистая, значит проверяется без браузера.
+
+**Files:**
+- Create: `package.json`, `.gitignore` (уже есть), `src/content/segment.js`
+- Test: `tests/unit/segment.test.js`
+
+**Interfaces:**
+- Consumes: ничего
+- Produces:
+  - `unitBounds(text: string, offset: number, opts: {granularity: 'sentence'|'paragraph', lang: string}) → {start: number, end: number} | null`
+  - `ABBREVIATIONS: RegExp` — экспортируется для проверки и пополнения
+
+- [ ] **Step 1: Завести package.json**
+
+```json
+{
+  "name": "podskazka",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/unit/",
+    "test:dom": "node --test tests/dom/"
+  }
+}
+```
+
+- [ ] **Step 2: Написать падающий тест**
+
+Создать `tests/unit/segment.test.js`:
+
+```js
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { unitBounds } from '../../src/content/segment.js';
+
+const es = { granularity: 'sentence', lang: 'es' };
+const slice = (t, b) => t.slice(b.start, b.end);
+
+test('берёт предложение, внутри которого стоит курсор', () => {
+  const t = 'Vino a casa muy tarde, porque el tren se retrasó. Luego cenamos juntos.';
+  assert.equal(slice(t, unitBounds(t, 5, es)), 'Vino a casa muy tarde, porque el tren se retrasó.');
+  assert.equal(slice(t, unitBounds(t, 55, es)), 'Luego cenamos juntos.');
+});
+
+// Сегментер режет «Sr. García» на два куска, и единицей стал бы огрызок
+// «Sr. » — бесполезный для перевода и всё равно платный.
+test('не разрывает сокращение с точкой', () => {
+  const t = 'Sr. García llegó tarde. Cenamos juntos.';
+  assert.equal(slice(t, unitBounds(t, 6, es)), 'Sr. García llegó tarde.');
+});
+
+test('не разрывает адрес с сокращением', () => {
+  const t = 'Vive en Av. Corrientes. Trabaja cerca.';
+  assert.equal(slice(t, unitBounds(t, 15, es)), 'Vive en Av. Corrientes.');
+});
+
+test('не разрывает число с точкой-разделителем', () => {
+  const t = 'Cuesta 1.500 pesos. Es barato.';
+  assert.equal(slice(t, unitBounds(t, 9, es)), 'Cuesta 1.500 pesos.');
+});
+
+test('не разрывает многоточие', () => {
+  const t = 'No sé... quizá mañana. Ya veremos.';
+  assert.equal(slice(t, unitBounds(t, 3, es)), 'No sé... quizá mañana.');
+});
+
+test('текст без финальной точки — одна единица', () => {
+  const t = 'Hola mundo';
+  assert.equal(slice(t, unitBounds(t, 4, es)), 'Hola mundo');
+});
+
+test('режим абзаца берёт весь текст блока', () => {
+  const t = 'Primera frase. Segunda frase.';
+  const b = unitBounds(t, 5, { granularity: 'paragraph', lang: 'es' });
+  assert.deepEqual(b, { start: 0, end: t.length });
+});
+
+test('смещение вне текста даёт null, а не исключение', () => {
+  assert.equal(unitBounds('Hola', 99, es), null);
+  assert.equal(unitBounds('', 0, es), null);
+});
+
+// Пробелы между предложениями сегментер отдаёт в конце куска. В перевод
+// их слать незачем, и подсветка на них выглядит как хвост.
+test('границы не захватывают хвостовой пробел', () => {
+  const t = 'Uno. Dos.';
+  const b = unitBounds(t, 1, es);
+  assert.equal(t.slice(b.start, b.end), 'Uno.');
+});
+```
+
+- [ ] **Step 3: Убедиться, что тест падает**
+
+Run: `cd ~/projects/podskazka && npm test`
+Expected: FAIL — `Cannot find module .../src/content/segment.js`
+
+- [ ] **Step 4: Реализовать нарезку**
+
+Создать `src/content/segment.js`:
+
+```js
+/**
+ * Нарезка текста на единицы перевода.
+ *
+ * Чистая функция, без DOM: её можно гонять в Node, а значит проверять
+ * быстро и без браузера. Всё, что знает о странице, живёт в hover.js.
+ */
+
+/**
+ * Сокращения, после которых точка не заканчивает предложение.
+ *
+ * Intl.Segmenter правила языка знает, но на сокращениях ошибается:
+ * «Sr. García llegó tarde.» он делит на «Sr. » и «García llegó tarde. ».
+ * Единицей стал бы огрызок «Sr. » — для перевода бесполезный и платный.
+ *
+ * Список заведомо неполон, и это приемлемо: промах даёт короткую
+ * единицу, а не сломанную страницу. Пополняется по мере находок.
+ */
+export const ABBREVIATIONS =
+  /(?:^|\s)(?:Sr|Sra|Srta|Dr|Dra|Ud|Uds|Av|Lic|Ing|etc|núm|pág)\.\s*$/i;
+
+/**
+ * Предложения с их смещениями, уже склеенные по сокращениям.
+ *
+ * @returns {{index: number, segment: string}[]}
+ */
+function sentences(text, lang) {
+  const raw = [...new Intl.Segmenter(lang, { granularity: 'sentence' }).segment(text)];
+  const out = [];
+
+  for (const s of raw) {
+    const prev = out[out.length - 1];
+    if (prev && ABBREVIATIONS.test(prev.segment)) {
+      prev.segment += s.segment;
+    } else {
+      out.push({ index: s.index, segment: s.segment });
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Границы единицы перевода, внутри которой стоит смещение.
+ *
+ * @param {string} text  текст блока
+ * @param {number} offset  смещение курсора в этом тексте
+ * @param {{granularity: 'sentence'|'paragraph', lang: string}} opts
+ * @returns {{start: number, end: number} | null}  null, если текста нет
+ *          или смещение вне его
+ */
+export function unitBounds(text, offset, opts) {
+  if (!text || offset < 0 || offset > text.length) {
+    return null;
+  }
+
+  if (opts.granularity === 'paragraph') {
+    return { start: 0, end: text.length };
+  }
+
+  for (const s of sentences(text, opts.lang)) {
+    const start = s.index;
+    const end = start + s.segment.length;
+    if (offset >= start && offset < end) {
+      // Хвостовой пробел сегментер отдаёт внутри куска: в перевод он не
+      // нужен, а подсветка на нём выглядит как лишний хвост.
+      const trimmed = s.segment.replace(/\s+$/, '');
+      return { start, end: start + trimmed.length };
+    }
+  }
+
+  return null;
+}
+```
+
+- [ ] **Step 5: Убедиться, что тесты проходят**
+
+Run: `npm test`
+Expected: PASS, 9 тестов
+
+- [ ] **Step 6: Коммит**
+
+```bash
+git add package.json src/content/segment.js tests/unit/segment.test.js
+git commit -m "Нарезка текста на единицы перевода
+
+Intl.Segmenter знает правила языка, но рвёт сокращения: «Sr. García»
+он делит надвое, и единицей становится огрызок «Sr. ». Поверх него
+идёт проход, склеивающий кусок, который кончается сокращением, со
+следующим. Числа и многоточия сегментер режет верно сам."
+```
+
+---
+
+### Task 2: Ключ кэша
+
+**Files:**
+- Create: `src/bg/cachekey.js`
+- Test: `tests/unit/cachekey.test.js`
+
+**Interfaces:**
+- Consumes: ничего
+- Produces: `cacheKey(text: string, targetLang: string, model: string) → Promise<string>` — hex-строка
+
+- [ ] **Step 1: Написать падающий тест**
+
+```js
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { cacheKey } from '../../src/bg/cachekey.js';
+
+test('одинаковый вход даёт одинаковый ключ', async () => {
+  const a = await cacheKey('Hola', 'ru', 'gpt-4o-mini');
+  const b = await cacheKey('Hola', 'ru', 'gpt-4o-mini');
+  assert.equal(a, b);
+});
+
+// Модель в ключе обязательна: сменили модель — прежние переводы не
+// должны выдаваться за новые.
+test('смена модели меняет ключ', async () => {
+  const a = await cacheKey('Hola', 'ru', 'gpt-4o-mini');
+  const b = await cacheKey('Hola', 'ru', 'gpt-4o');
+  assert.notEqual(a, b);
+});
+
+test('смена языка цели меняет ключ', async () => {
+  const a = await cacheKey('Hola', 'ru', 'gpt-4o-mini');
+  const b = await cacheKey('Hola', 'en', 'gpt-4o-mini');
+  assert.notEqual(a, b);
+});
+
+// Склейка через разделитель, а не конкатенация: иначе ('ab','c') и
+// ('a','bc') дали бы один ключ.
+test('границы полей не склеиваются', async () => {
+  const a = await cacheKey('ab', 'c', 'm');
+  const b = await cacheKey('a', 'bc', 'm');
+  assert.notEqual(a, b);
+});
+
+test('ключ — hex и фиксированной длины', async () => {
+  const k = await cacheKey('Hola', 'ru', 'gpt-4o-mini');
+  assert.match(k, /^[0-9a-f]{64}$/);
+});
+```
+
+- [ ] **Step 2: Убедиться, что тест падает**
+
+Run: `npm test`
+Expected: FAIL — модуль не найден
+
+- [ ] **Step 3: Реализовать**
+
+```js
+/**
+ * Ключ записи кэша.
+ *
+ * Хэш от текста, языка цели и модели — но не от URL: одна и та же фраза
+ * встречается на разных страницах, и платить за неё дважды незачем.
+ *
+ * Модель входит в ключ обязательно: сменили модель — прежние переводы
+ * не должны выдаваться за новые.
+ */
+export async function cacheKey(text, targetLang, model) {
+  // Разделитель   не встречается в нормальном тексте, поэтому
+  // ('ab','c') и ('a','bc') дают разные ключи.
+  const material = [text, targetLang, model].join(' ');
+  const bytes = new TextEncoder().encode(material);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+
+  return [...new Uint8Array(digest)]
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+```
+
+- [ ] **Step 4: Убедиться, что тесты проходят**
+
+Run: `npm test`
+Expected: PASS
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add src/bg/cachekey.js tests/unit/cachekey.test.js
+git commit -m "Ключ кэша по тексту, языку и модели"
+```
+
+---
+
+### Task 3: Кэш со сроком жизни
+
+**Files:**
+- Create: `src/bg/cache.js`
+- Test: `tests/unit/cache.test.js`
+
+**Interfaces:**
+- Consumes: `cacheKey` из Task 2 (в тестах не нужен — ключи задаются строками)
+- Produces:
+  - `cacheGet(storage, key, ttlMs, now) → Promise<{translation, note, ts, model} | null>`
+  - `cacheSet(storage, key, entry, now) → Promise<void>`
+  - `cacheSweep(storage, ttlMs, now) → Promise<number>` — сколько удалено
+  - `storage` — объект `{get(keys), set(obj), remove(keys)}`, то есть `chrome.storage.local` или подделка в тестах
+
+- [ ] **Step 1: Написать падающий тест**
+
+```js
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { cacheGet, cacheSet, cacheSweep } from '../../src/bg/cache.js';
+
+// Подделка chrome.storage.local: те же три метода, обычный объект внутри.
+// Настоящее хранилище в тестах не нужно, а поведение проверяется то же.
+function fakeStorage(initial = {}) {
+  const data = { ...initial };
+  return {
+    data,
+    async get(keys) {
+      if (keys === null || keys === undefined) return { ...data };
+      const list = Array.isArray(keys) ? keys : [keys];
+      const out = {};
+      for (const k of list) if (k in data) out[k] = data[k];
+      return out;
+    },
+    async set(obj) { Object.assign(data, obj); },
+    async remove(keys) {
+      for (const k of (Array.isArray(keys) ? keys : [keys])) delete data[k];
+    },
+  };
+}
+
+const DAY = 86400000;
+const entry = { translation: 'Привет', note: '', model: 'gpt-4o-mini' };
+
+test('записанное читается', async () => {
+  const s = fakeStorage();
+  await cacheSet(s, 'k1', entry, 1000);
+  assert.equal((await cacheGet(s, 'k1', 30 * DAY, 2000)).translation, 'Привет');
+});
+
+test('чего нет — null', async () => {
+  assert.equal(await cacheGet(fakeStorage(), 'нет', 30 * DAY, 1000), null);
+});
+
+test('просроченное не отдаётся', async () => {
+  const s = fakeStorage();
+  await cacheSet(s, 'k1', entry, 0);
+  assert.equal(await cacheGet(s, 'k1', 30 * DAY, 31 * DAY), null);
+});
+
+test('не просроченное отдаётся', async () => {
+  const s = fakeStorage();
+  await cacheSet(s, 'k1', entry, 0);
+  assert.ok(await cacheGet(s, 'k1', 30 * DAY, 29 * DAY));
+});
+
+// Просроченное не только не отдаётся, но и удаляется при чтении: иначе
+// хранилище растёт на записях, которые уже никогда не пригодятся.
+test('просроченное удаляется при чтении', async () => {
+  const s = fakeStorage();
+  await cacheSet(s, 'k1', entry, 0);
+  await cacheGet(s, 'k1', 30 * DAY, 31 * DAY);
+  assert.equal('podskazka:k1' in s.data, false);
+});
+
+test('уборка сносит только просроченное', async () => {
+  const s = fakeStorage();
+  await cacheSet(s, 'старое', entry, 0);
+  await cacheSet(s, 'свежее', entry, 29 * DAY);
+  const removed = await cacheSweep(s, 30 * DAY, 31 * DAY);
+  assert.equal(removed, 1);
+  assert.equal('podskazka:старое' in s.data, false);
+  assert.equal('podskazka:свежее' in s.data, true);
+});
+
+// В хранилище расширения лежат и настройки. Уборка кэша не должна их трогать.
+test('уборка не трогает чужие ключи', async () => {
+  const s = fakeStorage({ settings: { model: 'gpt-4o-mini' } });
+  await cacheSet(s, 'старое', entry, 0);
+  await cacheSweep(s, 30 * DAY, 31 * DAY);
+  assert.deepEqual(s.data.settings, { model: 'gpt-4o-mini' });
+});
+```
+
+- [ ] **Step 2: Убедиться, что тест падает**
+
+Run: `npm test`
+Expected: FAIL — модуль не найден
+
+- [ ] **Step 3: Реализовать**
+
+```js
+/**
+ * Кэш переводов поверх chrome.storage.local.
+ *
+ * Хранилище приходит параметром, а не берётся из глобального chrome:
+ * так функции проверяются обычным объектом в Node, без браузера.
+ *
+ * Время тоже параметром: тест на срок жизни не должен ждать месяц.
+ */
+
+/** Префикс, чтобы записи кэша не смешивались с настройками. */
+const PREFIX = 'podskazka:';
+
+export async function cacheSet(storage, key, entry, now) {
+  await storage.set({ [PREFIX + key]: { ...entry, ts: now } });
+}
+
+export async function cacheGet(storage, key, ttlMs, now) {
+  const full = PREFIX + key;
+  const got = await storage.get(full);
+  const entry = got[full];
+
+  if (!entry) {
+    return null;
+  }
+
+  if (now - entry.ts > ttlMs) {
+    // Удаляем сразу: иначе хранилище растёт записями, которые уже
+    // никогда не пригодятся.
+    await storage.remove(full);
+    return null;
+  }
+
+  return entry;
+}
+
+/** Разовая уборка всего просроченного. Возвращает число удалённых. */
+export async function cacheSweep(storage, ttlMs, now) {
+  const all = await storage.get(null);
+  const dead = Object.keys(all).filter(
+    (k) => k.startsWith(PREFIX) && now - all[k].ts > ttlMs
+  );
+
+  if (dead.length > 0) {
+    await storage.remove(dead);
+  }
+
+  return dead.length;
+}
+```
+
+- [ ] **Step 4: Убедиться, что тесты проходят**
+
+Run: `npm test`
+Expected: PASS
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add src/bg/cache.js tests/unit/cache.test.js
+git commit -m "Кэш переводов со сроком жизни и уборкой"
+```
+
+---
+
+### Task 4: Сборка запроса и разбор ответа
+
+**Files:**
+- Create: `src/bg/prompt.js`
+- Test: `tests/unit/prompt.test.js`
+
+**Interfaces:**
+- Consumes: ничего
+- Produces:
+  - `buildBody({text, targetLang, model, wantNote}) → object` — тело POST к `/v1/chat/completions`
+  - `parseAnswer(json) → {translation: string, note: string}`, бросает `Error` на невалидном
+
+- [ ] **Step 1: Написать падающий тест**
+
+```js
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { buildBody, parseAnswer } from '../../src/bg/prompt.js';
+
+test('тело запроса несёт модель и текст', () => {
+  const b = buildBody({ text: 'Hola', targetLang: 'ru', model: 'gpt-4o-mini', wantNote: true });
+  assert.equal(b.model, 'gpt-4o-mini');
+  assert.ok(JSON.stringify(b.messages).includes('Hola'));
+});
+
+// Без строгого JSON разбор ответа превращается в угадывание.
+test('ответ просим строгим JSON', () => {
+  const b = buildBody({ text: 'Hola', targetLang: 'ru', model: 'gpt-4o-mini', wantNote: true });
+  assert.deepEqual(b.response_format, { type: 'json_object' });
+});
+
+test('язык цели попадает в запрос', () => {
+  const b = buildBody({ text: 'Hola', targetLang: 'ru', model: 'gpt-4o-mini', wantNote: true });
+  assert.match(JSON.stringify(b.messages), /ru|русск/i);
+});
+
+// Пометки стоят лишних токенов: выключили — не просим.
+test('без пометок их не просят', () => {
+  const withNote = JSON.stringify(buildBody({ text: 'x', targetLang: 'ru', model: 'm', wantNote: true }));
+  const without = JSON.stringify(buildBody({ text: 'x', targetLang: 'ru', model: 'm', wantNote: false }));
+  assert.ok(withNote.includes('note'));
+  assert.ok(!without.includes('note'));
+});
+
+const answer = (content) => ({ choices: [{ message: { content } }] });
+
+test('разбирает перевод и пометку', () => {
+  const r = parseAnswer(answer('{"translation":"Привет","note":"vino — от venir"}'));
+  assert.equal(r.translation, 'Привет');
+  assert.equal(r.note, 'vino — от venir');
+});
+
+test('пометки может не быть', () => {
+  assert.equal(parseAnswer(answer('{"translation":"Привет"}')).note, '');
+});
+
+test('не-JSON в ответе — ошибка, а не тихий мусор', () => {
+  assert.throws(() => parseAnswer(answer('Привет, вот перевод')), /ответ/i);
+});
+
+test('JSON без перевода — ошибка', () => {
+  assert.throws(() => parseAnswer(answer('{"note":"только пометка"}')), /ответ/i);
+});
+
+test('пустой список choices — ошибка', () => {
+  assert.throws(() => parseAnswer({ choices: [] }), /ответ/i);
+});
+```
+
+- [ ] **Step 2: Убедиться, что тест падает**
+
+Run: `npm test`
+Expected: FAIL — модуль не найден
+
+- [ ] **Step 3: Реализовать**
+
+```js
+/**
+ * Что отправляем модели и как читаем ответ.
+ *
+ * Отделено от сети: сборка и разбор проверяются без единого запроса.
+ */
+
+function systemPrompt(targetLang, wantNote) {
+  const base =
+    `Ты помогаешь читать текст в оригинале. Переведи присланный фрагмент ` +
+    `на язык "${targetLang}". Перевод должен быть естественным, а не ` +
+    `подстрочником. Верни JSON.`;
+
+  return wantNote
+    ? base +
+        ` Поля: "translation" — перевод, "note" — короткая пометка о том, ` +
+        `что в этом месте легко понять неправильно: форма глагола, идиома, ` +
+        `местный оборот. Если место простое, "note" опусти.`
+    : base + ` Поле: "translation" — перевод.`;
+}
+
+export function buildBody({ text, targetLang, model, wantNote }) {
+  return {
+    model,
+    // Строгий JSON: иначе модель вернёт «Вот перевод: …», и разбор
+    // превратится в угадывание.
+    response_format: { type: 'json_object' },
+    temperature: 0.2,
+    messages: [
+      { role: 'system', content: systemPrompt(targetLang, wantNote) },
+      { role: 'user', content: text },
+    ],
+  };
+}
+
+export function parseAnswer(json) {
+  const content = json?.choices?.[0]?.message?.content;
+  if (typeof content !== 'string') {
+    throw new Error('Неожиданный ответ модели: нет содержимого');
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    throw new Error('Неожиданный ответ модели: не JSON');
+  }
+
+  if (typeof parsed.translation !== 'string' || parsed.translation === '') {
+    throw new Error('Неожиданный ответ модели: нет перевода');
+  }
+
+  return {
+    translation: parsed.translation,
+    note: typeof parsed.note === 'string' ? parsed.note : '',
+  };
+}
+```
+
+- [ ] **Step 4: Убедиться, что тесты проходят**
+
+Run: `npm test`
+Expected: PASS
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add src/bg/prompt.js tests/unit/prompt.test.js
+git commit -m "Сборка запроса к модели и разбор ответа"
+```
+
+---
+
+### Task 5: Сеть и классификация ошибок
+
+Тултип обязан говорить, что случилось. Отдельно важен случай пустого баланса: OpenAI отдаёт его как 429, и без разбора он выглядит как «слишком много запросов», хотя лечится пополнением.
+
+**Files:**
+- Create: `src/bg/translate.js`
+- Test: `tests/unit/translate.test.js`
+
+**Interfaces:**
+- Consumes: `buildBody`, `parseAnswer` из Task 4
+- Produces:
+  - `class TranslateError extends Error` с полем `code`
+  - `translate({text, targetLang, model, apiKey, wantNote, fetchImpl}) → Promise<{translation, note}>`
+  - коды: `'no-key' | 'unauthorized' | 'quota' | 'rate-limit' | 'network' | 'bad-response' | 'http'`
+
+- [ ] **Step 1: Написать падающий тест**
+
+```js
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { translate, TranslateError } from '../../src/bg/translate.js';
+
+const ok = (content) => async () => ({
+  ok: true, status: 200,
+  json: async () => ({ choices: [{ message: { content } }] }),
+});
+const fail = (status, body) => async () => ({
+  ok: false, status,
+  json: async () => body,
+  text: async () => JSON.stringify(body),
+});
+const args = { text: 'Hola', targetLang: 'ru', model: 'gpt-4o-mini', apiKey: 'k', wantNote: true };
+
+test('успешный перевод возвращается', async () => {
+  const r = await translate({ ...args, fetchImpl: ok('{"translation":"Привет"}') });
+  assert.equal(r.translation, 'Привет');
+});
+
+test('ключ уходит в заголовке', async () => {
+  let seen;
+  const spy = async (url, init) => { seen = init; return (await ok('{"translation":"x"}')()); };
+  await translate({ ...args, fetchImpl: spy });
+  assert.equal(seen.headers.Authorization, 'Bearer k');
+});
+
+test('без ключа в сеть не ходим вовсе', async () => {
+  let called = false;
+  const spy = async () => { called = true; };
+  await assert.rejects(
+    translate({ ...args, apiKey: '', fetchImpl: spy }),
+    (e) => e instanceof TranslateError && e.code === 'no-key'
+  );
+  assert.equal(called, false, 'запроса быть не должно');
+});
+
+test('401 — ключ не принят', async () => {
+  await assert.rejects(
+    translate({ ...args, fetchImpl: fail(401, { error: { message: 'bad key' } }) }),
+    (e) => e.code === 'unauthorized'
+  );
+});
+
+// Пустой баланс приходит как 429, и это НЕ то же, что превышение частоты:
+// лечится пополнением, а не ожиданием. Коды разные.
+test('429 с insufficient_quota — это кончились деньги', async () => {
+  await assert.rejects(
+    translate({ ...args, fetchImpl: fail(429, { error: { code: 'insufficient_quota' } }) }),
+    (e) => e.code === 'quota'
+  );
+});
+
+test('429 без insufficient_quota — превышение частоты', async () => {
+  await assert.rejects(
+    translate({ ...args, fetchImpl: fail(429, { error: { code: 'rate_limit_exceeded' } }) }),
+    (e) => e.code === 'rate-limit'
+  );
+});
+
+test('обрыв сети — одна повторная попытка, потом ошибка', async () => {
+  let calls = 0;
+  const flaky = async () => { calls++; throw new TypeError('Failed to fetch'); };
+  await assert.rejects(
+    translate({ ...args, fetchImpl: flaky }),
+    (e) => e.code === 'network'
+  );
+  assert.equal(calls, 2, 'одна попытка и один повтор');
+});
+
+test('обрыв на первой попытке, успех на второй', async () => {
+  let calls = 0;
+  const flaky = async (u, i) => {
+    calls++;
+    if (calls === 1) throw new TypeError('Failed to fetch');
+    return ok('{"translation":"Привет"}')();
+  };
+  assert.equal((await translate({ ...args, fetchImpl: flaky })).translation, 'Привет');
+});
+
+test('мусор в ответе — bad-response', async () => {
+  await assert.rejects(
+    translate({ ...args, fetchImpl: ok('не json') }),
+    (e) => e.code === 'bad-response'
+  );
+});
+
+test('прочий HTTP-код не теряется', async () => {
+  await assert.rejects(
+    translate({ ...args, fetchImpl: fail(500, {}) }),
+    (e) => e.code === 'http'
+  );
+});
+```
+
+- [ ] **Step 2: Убедиться, что тест падает**
+
+Run: `npm test`
+Expected: FAIL — модуль не найден
+
+- [ ] **Step 3: Реализовать**
+
+```js
+import { buildBody, parseAnswer } from './prompt.js';
+
+const ENDPOINT = 'https://api.openai.com/v1/chat/completions';
+
+/** Ошибка с кодом: по коду тултип выбирает, что показать человеку. */
+export class TranslateError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = 'TranslateError';
+    this.code = code;
+  }
+}
+
+/** Классификация неуспешного HTTP-ответа. */
+async function classify(response) {
+  let body = {};
+  try {
+    body = await response.json();
+  } catch {
+    // тело может быть не JSON — код ответа важнее
+  }
+
+  const code = body?.error?.code ?? '';
+
+  if (response.status === 401) {
+    return new TranslateError('unauthorized', 'Ключ не принят');
+  }
+
+  if (response.status === 429) {
+    // Пустой баланс OpenAI отдаёт как 429. Это не превышение частоты:
+    // ждать бесполезно, нужно пополнить счёт. Поэтому коды разные.
+    return code === 'insufficient_quota'
+      ? new TranslateError('quota', 'Закончился баланс')
+      : new TranslateError('rate-limit', 'Слишком много запросов');
+  }
+
+  return new TranslateError('http', `Ответ сервера ${response.status}`);
+}
+
+/**
+ * Перевод одного фрагмента.
+ *
+ * fetchImpl параметром, чтобы тесты не ходили в сеть и не тратили деньги.
+ */
+export async function translate({ text, targetLang, model, apiKey, wantNote, fetchImpl = fetch }) {
+  if (!apiKey) {
+    // До сети не доходим: без ключа запрос всё равно бессмысленный.
+    throw new TranslateError('no-key', 'Не задан ключ API');
+  }
+
+  const init = {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(buildBody({ text, targetLang, model, wantNote })),
+  };
+
+  let response;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      response = await fetchImpl(ENDPOINT, init);
+      break;
+    } catch (e) {
+      // Обрыв связи бывает разовым, поэтому одна повторная попытка.
+      // Больше одной — человек уже ждёт слишком долго.
+      if (attempt === 1) {
+        throw new TranslateError('network', 'Нет связи');
+      }
+    }
+  }
+
+  if (!response.ok) {
+    throw await classify(response);
+  }
+
+  try {
+    return parseAnswer(await response.json());
+  } catch (e) {
+    throw new TranslateError('bad-response', e.message);
+  }
+}
+```
+
+- [ ] **Step 4: Убедиться, что тесты проходят**
+
+Run: `npm test`
+Expected: PASS
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add src/bg/translate.js tests/unit/translate.test.js
+git commit -m "Запрос к модели и разбор ошибок
+
+Пустой баланс OpenAI отдаёт как 429, и без разбора он неотличим от
+превышения частоты — хотя лечится пополнением, а не ожиданием.
+Поэтому у них разные коды и разные сообщения в тултипе."
+```
+
+---
+
+### Task 6: Настройки с умолчаниями
+
+**Files:**
+- Create: `src/bg/settings.js`
+- Test: `tests/unit/settings.test.js`
+
+**Interfaces:**
+- Consumes: подделка хранилища из Task 3 (тот же вид объекта)
+- Produces:
+  - `DEFAULTS` — объект умолчаний
+  - `loadSettings(storage) → Promise<settings>`
+  - `saveSettings(storage, patch) → Promise<void>`
+
+- [ ] **Step 1: Написать падающий тест**
+
+```js
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { DEFAULTS, loadSettings, saveSettings } from '../../src/bg/settings.js';
+
+function fakeStorage(initial = {}) {
+  const data = { ...initial };
+  return {
+    data,
+    async get(keys) {
+      if (keys === null || keys === undefined) return { ...data };
+      const list = Array.isArray(keys) ? keys : [keys];
+      const out = {};
+      for (const k of list) if (k in data) out[k] = data[k];
+      return out;
+    },
+    async set(obj) { Object.assign(data, obj); },
+    async remove(keys) { for (const k of (Array.isArray(keys) ? keys : [keys])) delete data[k]; },
+  };
+}
+
+test('на пустом хранилище отдаёт умолчания', async () => {
+  assert.deepEqual(await loadSettings(fakeStorage()), DEFAULTS);
+});
+
+test('модель по умолчанию gpt-4o-mini', () => {
+  assert.equal(DEFAULTS.model, 'gpt-4o-mini');
+});
+
+test('ключа по умолчанию нет', () => {
+  assert.equal(DEFAULTS.apiKey, '');
+});
+
+test('режим по умолчанию — предложение', () => {
+  assert.equal(DEFAULTS.granularity, 'sentence');
+});
+
+test('сохранённое перекрывает умолчание', async () => {
+  const s = fakeStorage();
+  await saveSettings(s, { model: 'gpt-4o' });
+  assert.equal((await loadSettings(s)).model, 'gpt-4o');
+});
+
+// Добавили новую настройку в новой версии — у человека в хранилище её
+// нет. Отдать undefined значит уронить расширение после обновления.
+test('частично сохранённое дополняется умолчаниями', async () => {
+  const s = fakeStorage({ settings: { model: 'gpt-4o' } });
+  const got = await loadSettings(s);
+  assert.equal(got.model, 'gpt-4o');
+  assert.equal(got.granularity, DEFAULTS.granularity);
+  assert.equal(got.dwellMs, DEFAULTS.dwellMs);
+});
+
+test('сохранение не стирает прочие настройки', async () => {
+  const s = fakeStorage();
+  await saveSettings(s, { model: 'gpt-4o' });
+  await saveSettings(s, { targetLang: 'en' });
+  const got = await loadSettings(s);
+  assert.equal(got.model, 'gpt-4o');
+  assert.equal(got.targetLang, 'en');
+});
+```
+
+- [ ] **Step 2: Убедиться, что тест падает**
+
+Run: `npm test`
+Expected: FAIL — модуль не найден
+
+- [ ] **Step 3: Реализовать**
+
+```js
+/**
+ * Настройки расширения.
+ *
+ * Всё читается через loadSettings: она дополняет сохранённое
+ * умолчаниями. Без этого новая настройка, добавленная в новой версии,
+ * приходила бы undefined тем, у кого хранилище от старой.
+ */
+
+const KEY = 'settings';
+
+export const DEFAULTS = {
+  apiKey: '',
+  model: 'gpt-4o-mini',
+  targetLang: 'ru',
+  sourceLang: 'auto',
+  granularity: 'sentence',
+  dwellMs: 300,
+  ttlDays: 30,
+  wantNote: true,
+  colorActive: '#ffe08a',
+  colorSeen: '#d9f2d9',
+  colorError: '#ffd6d6',
+};
+
+export async function loadSettings(storage) {
+  const got = await storage.get(KEY);
+  return { ...DEFAULTS, ...(got[KEY] ?? {}) };
+}
+
+export async function saveSettings(storage, patch) {
+  const current = await loadSettings(storage);
+  await storage.set({ [KEY]: { ...current, ...patch } });
+}
+```
+
+- [ ] **Step 4: Убедиться, что тесты проходят**
+
+Run: `npm test`
+Expected: PASS
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add src/bg/settings.js tests/unit/settings.test.js
+git commit -m "Настройки с умолчаниями, устойчивые к обновлению"
+```
+
+---
+
+### Task 7: Фоновый воркер — порядок «кэш → сеть → кэш»
+
+**Files:**
+- Create: `src/bg/handler.js`, `src/bg/index.js`
+- Test: `tests/unit/handler.test.js`
+
+Логика вынесена в `handler.js` отдельно от `index.js`: обработчик — чистая функция от внедряемых зависимостей, её можно проверить без `chrome`. В `index.js` остаётся только привязка к `chrome.runtime.onMessage` и `chrome.alarms`.
+
+**Interfaces:**
+- Consumes: `cacheKey` (Task 2), `cacheGet`/`cacheSet` (Task 3), `translate`/`TranslateError` (Task 5), `loadSettings` (Task 6)
+- Produces: `handleTranslate(msg, deps) → Promise<{ok: true, translation, note, cached} | {ok: false, code, message}>`
+  где `deps = {storage, translateImpl, now}`
+
+- [ ] **Step 1: Написать падающий тест**
+
+```js
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { handleTranslate } from '../../src/bg/handler.js';
+import { TranslateError } from '../../src/bg/translate.js';
+
+function fakeStorage(initial = {}) {
+  const data = { ...initial };
+  return {
+    data,
+    async get(keys) {
+      if (keys === null || keys === undefined) return { ...data };
+      const list = Array.isArray(keys) ? keys : [keys];
+      const out = {};
+      for (const k of list) if (k in data) out[k] = data[k];
+      return out;
+    },
+    async set(obj) { Object.assign(data, obj); },
+    async remove(keys) { for (const k of (Array.isArray(keys) ? keys : [keys])) delete data[k]; },
+  };
+}
+
+const msg = { type: 'translate', text: 'Hola', targetLang: 'ru' };
+const withKey = { settings: { apiKey: 'k' } };
+
+test('промах кэша идёт в сеть и отдаёт перевод', async () => {
+  const r = await handleTranslate(msg, {
+    storage: fakeStorage(withKey),
+    translateImpl: async () => ({ translation: 'Привет', note: '' }),
+    now: 1000,
+  });
+  assert.deepEqual(r, { ok: true, translation: 'Привет', note: '', cached: false });
+});
+
+// Ради этого кэш и заводился: второй заход не должен стоить денег.
+test('второй раз берётся из кэша, в сеть не ходим', async () => {
+  const storage = fakeStorage(withKey);
+  let calls = 0;
+  const deps = {
+    storage,
+    translateImpl: async () => { calls++; return { translation: 'Привет', note: '' }; },
+    now: 1000,
+  };
+  await handleTranslate(msg, deps);
+  const second = await handleTranslate(msg, deps);
+  assert.equal(calls, 1, 'сеть должна быть вызвана один раз');
+  assert.equal(second.cached, true);
+  assert.equal(second.translation, 'Привет');
+});
+
+test('ошибка перевода отдаётся кодом, а не исключением', async () => {
+  const r = await handleTranslate(msg, {
+    storage: fakeStorage(withKey),
+    translateImpl: async () => { throw new TranslateError('quota', 'Закончился баланс'); },
+    now: 1000,
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'quota');
+});
+
+// Неудачу кэшировать нельзя: пополнил баланс — должно заработать сразу.
+test('ошибка не попадает в кэш', async () => {
+  const storage = fakeStorage(withKey);
+  let calls = 0;
+  const failing = async () => { calls++; throw new TranslateError('quota', 'нет денег'); };
+  await handleTranslate(msg, { storage, translateImpl: failing, now: 1000 });
+  await handleTranslate(msg, { storage, translateImpl: failing, now: 1000 });
+  assert.equal(calls, 2);
+});
+
+test('без ключа отвечает no-key', async () => {
+  const r = await handleTranslate(msg, {
+    storage: fakeStorage(),
+    translateImpl: async () => { throw new TranslateError('no-key', 'нет ключа'); },
+    now: 1000,
+  });
+  assert.equal(r.code, 'no-key');
+});
+
+// Смена модели не должна выдавать старые переводы за новые.
+test('смена модели обходит кэш', async () => {
+  const storage = fakeStorage({ settings: { apiKey: 'k', model: 'gpt-4o-mini' } });
+  let calls = 0;
+  const impl = async () => { calls++; return { translation: 'Привет', note: '' }; };
+  await handleTranslate(msg, { storage, translateImpl: impl, now: 1000 });
+  storage.data.settings = { apiKey: 'k', model: 'gpt-4o' };
+  await handleTranslate(msg, { storage, translateImpl: impl, now: 1000 });
+  assert.equal(calls, 2);
+});
+```
+
+- [ ] **Step 2: Убедиться, что тест падает**
+
+Run: `npm test`
+Expected: FAIL — модуль не найден
+
+- [ ] **Step 3: Реализовать handler.js**
+
+```js
+import { cacheKey } from './cachekey.js';
+import { cacheGet, cacheSet } from './cache.js';
+import { loadSettings } from './settings.js';
+import { translate as realTranslate } from './translate.js';
+
+const DAY = 86400000;
+
+/**
+ * Обработка одного запроса на перевод: кэш → сеть → кэш.
+ *
+ * Зависимости приходят параметром (хранилище, переводчик, время), чтобы
+ * проверять порядок обращений без браузера и без сети.
+ *
+ * Ошибки не бросаются наружу, а возвращаются кодом: на том конце
+ * контент-скрипт, и ему нужно показать человеку причину, а не поймать
+ * исключение через границу сообщений.
+ */
+export async function handleTranslate(msg, deps) {
+  const { storage, translateImpl = realTranslate, now = Date.now() } = deps;
+  const settings = await loadSettings(storage);
+  const targetLang = msg.targetLang ?? settings.targetLang;
+
+  const key = await cacheKey(msg.text, targetLang, settings.model);
+  const hit = await cacheGet(storage, key, settings.ttlDays * DAY, now);
+
+  if (hit) {
+    return { ok: true, translation: hit.translation, note: hit.note, cached: true };
+  }
+
+  let result;
+  try {
+    result = await translateImpl({
+      text: msg.text,
+      targetLang,
+      model: settings.model,
+      apiKey: settings.apiKey,
+      wantNote: settings.wantNote,
+    });
+  } catch (e) {
+    // Неудачу не кэшируем: пополнил баланс — должно заработать сразу,
+    // а не через месяц, когда протухнет запись.
+    return { ok: false, code: e.code ?? 'http', message: e.message };
+  }
+
+  await cacheSet(storage, key, { ...result, model: settings.model }, now);
+
+  return { ok: true, translation: result.translation, note: result.note, cached: false };
+}
+```
+
+- [ ] **Step 4: Убедиться, что тесты проходят**
+
+Run: `npm test`
+Expected: PASS
+
+- [ ] **Step 5: Привязка к chrome в index.js**
+
+```js
+import { handleTranslate } from './handler.js';
+import { cacheSweep } from './cache.js';
+import { loadSettings } from './settings.js';
+
+const DAY = 86400000;
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg?.type !== 'translate') {
+    return false;
+  }
+
+  handleTranslate(msg, { storage: chrome.storage.local })
+    .then(sendResponse)
+    .catch((e) => sendResponse({ ok: false, code: 'http', message: String(e) }));
+
+  // true — ответ придёт асинхронно. Без этого канал закроется раньше
+  // ответа, и контент-скрипт не дождётся ничего.
+  return true;
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.alarms.create('podskazka-sweep', { periodInMinutes: 60 * 24 });
+});
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name !== 'podskazka-sweep') return;
+  const { ttlDays } = await loadSettings(chrome.storage.local);
+  await cacheSweep(chrome.storage.local, ttlDays * DAY, Date.now());
+});
+```
+
+- [ ] **Step 6: Коммит**
+
+```bash
+git add src/bg/handler.js src/bg/index.js tests/unit/handler.test.js
+git commit -m "Фоновый воркер: кэш, сеть, суточная уборка
+
+Логика вынесена в handler.js отдельно от привязки к chrome — так
+порядок «кэш → сеть → кэш» проверяется без браузера. Неудачи не
+кэшируются: пополнил баланс, и перевод работает сразу."
+```
+
+---
+
+### Task 8: Слои подсветки
+
+Первая задача с браузером. Проверяет главную гарантию спеки: разметка страницы не меняется.
+
+**Files:**
+- Create: `src/content/highlight.js`, `tests/dom/fixtures/plain.html`
+- Test: `tests/dom/highlight.test.js`
+
+**Interfaces:**
+- Consumes: ничего
+- Produces:
+  - `LAYERS = {active: 'podskazka-active', seen: 'podskazka-seen', error: 'podskazka-error'}`
+  - `installStyles(colors: {active, seen, error}) → void`
+  - `markActive(range) → void`, `markSeen(range) → void`, `markError(range) → void`
+  - `clearActive() → void`, `clearError() → void`, `clearAll() → void`
+
+- [ ] **Step 1: Завести страницу для проверок**
+
+`tests/dom/fixtures/plain.html`:
+
+```html
+<!doctype html>
+<meta charset="utf-8">
+<style>body{font:16px/1.6 serif;margin:20px;width:520px}</style>
+<p id="p">Vino a casa muy tarde, porque el tren se retrasó. Luego cenamos juntos.</p>
+```
+
+- [ ] **Step 2: Написать падающий тест**
+
+`tests/dom/highlight.test.js`:
+
+```js
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { chromium } from 'playwright';
+import { pathToFileURL } from 'node:url';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
+const here = path.dirname(new URL(import.meta.url).pathname);
+const fixture = pathToFileURL(path.join(here, 'fixtures/plain.html')).href;
+const source = readFileSync(path.join(here, '../../src/content/highlight.js'), 'utf8');
+
+/** Подключает модуль на страницу и возвращает открытую вкладку. */
+async function open(browser) {
+  const page = await browser.newPage();
+  await page.goto(fixture);
+  await page.addScriptTag({ content: source.replace(/^export /gm, ''), type: 'module' });
+  // Модуль через addScriptTag не виден в evaluate: вешаем на window.
+  await page.addScriptTag({
+    content: source.replace(/^export /gm, '') +
+      '\nwindow.H = { LAYERS, installStyles, markActive, markSeen, markError, clearActive, clearError, clearAll };',
+    type: 'module',
+  });
+  await page.waitForFunction(() => !!window.H);
+  return page;
+}
+
+test('подсветка не меняет разметку страницы', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser);
+
+  const before = await page.$eval('#p', (el) => el.outerHTML);
+  await page.evaluate(() => {
+    const tn = document.getElementById('p').firstChild;
+    const r = new Range(); r.setStart(tn, 0); r.setEnd(tn, 10);
+    window.H.installStyles({ active: '#ffe08a', seen: '#d9f2d9', error: '#ffd6d6' });
+    window.H.markActive(r);
+  });
+  const after = await page.$eval('#p', (el) => el.outerHTML);
+
+  assert.equal(after, before, 'разметка обязана остаться побайтово прежней');
+  await browser.close();
+});
+
+test('слои живут одновременно', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser);
+  const keys = await page.evaluate(() => {
+    const tn = document.getElementById('p').firstChild;
+    const mk = (a, z) => { const r = new Range(); r.setStart(tn, a); r.setEnd(tn, z); return r; };
+    window.H.installStyles({ active: '#ffe08a', seen: '#d9f2d9', error: '#ffd6d6' });
+    window.H.markSeen(mk(0, 48));
+    window.H.markActive(mk(0, 4));
+    return [...CSS.highlights.keys()].sort();
+  });
+  assert.deepEqual(keys, ['podskazka-active', 'podskazka-seen']);
+  await browser.close();
+});
+
+// При наложении активный слой обязан перекрывать след, иначе место под
+// курсором теряется среди уже прочитанного.
+test('активный слой приоритетнее следа', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser);
+  const prio = await page.evaluate(() => {
+    const tn = document.getElementById('p').firstChild;
+    const mk = (a, z) => { const r = new Range(); r.setStart(tn, a); r.setEnd(tn, z); return r; };
+    window.H.installStyles({ active: '#ffe08a', seen: '#d9f2d9', error: '#ffd6d6' });
+    window.H.markSeen(mk(0, 48));
+    window.H.markActive(mk(0, 4));
+    return {
+      active: CSS.highlights.get('podskazka-active').priority,
+      seen: CSS.highlights.get('podskazka-seen').priority,
+    };
+  });
+  assert.ok(prio.active > prio.seen);
+  await browser.close();
+});
+
+// След копится за сеанс: снятие активной подсветки не должно его стирать.
+test('след переживает снятие активного слоя', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser);
+  const keys = await page.evaluate(() => {
+    const tn = document.getElementById('p').firstChild;
+    const mk = (a, z) => { const r = new Range(); r.setStart(tn, a); r.setEnd(tn, z); return r; };
+    window.H.installStyles({ active: '#ffe08a', seen: '#d9f2d9', error: '#ffd6d6' });
+    window.H.markSeen(mk(0, 48));
+    window.H.markActive(mk(0, 4));
+    window.H.clearActive();
+    return [...CSS.highlights.keys()];
+  });
+  assert.deepEqual(keys, ['podskazka-seen']);
+  await browser.close();
+});
+
+test('след накапливает несколько мест', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser);
+  const size = await page.evaluate(() => {
+    const tn = document.getElementById('p').firstChild;
+    const mk = (a, z) => { const r = new Range(); r.setStart(tn, a); r.setEnd(tn, z); return r; };
+    window.H.installStyles({ active: '#ffe08a', seen: '#d9f2d9', error: '#ffd6d6' });
+    window.H.markSeen(mk(0, 10));
+    window.H.markSeen(mk(49, 60));
+    return CSS.highlights.get('podskazka-seen').size;
+  });
+  assert.equal(size, 2);
+  await browser.close();
+});
+```
+
+- [ ] **Step 3: Убедиться, что тест падает**
+
+Run: `cd ~/projects/podskazka && NODE_PATH=$HOME/.local/opt/node/lib/node_modules npm run test:dom`
+Expected: FAIL — `src/content/highlight.js` не читается
+
+- [ ] **Step 4: Реализовать**
+
+```js
+/**
+ * Слои подсветки.
+ *
+ * CSS Custom Highlight API вместо обёртки текста в теги: разметка
+ * страницы остаётся нетронутой, а значит не ломаются ни SPA, ни
+ * селекторы сайта, ни вёрстка. Это главная гарантия всего расширения,
+ * и на неё есть отдельный тест.
+ */
+
+export const LAYERS = {
+  active: 'podskazka-active',
+  seen: 'podskazka-seen',
+  error: 'podskazka-error',
+};
+
+/** Приоритеты при наложении: активное место обязано быть видно поверх следа. */
+const PRIORITY = { [LAYERS.seen]: 1, [LAYERS.error]: 2, [LAYERS.active]: 3 };
+
+let styleEl = null;
+
+/** Оформление слоёв. Цвета настраиваемые: на тёмной теме умолчания слепнут. */
+export function installStyles(colors) {
+  if (!styleEl) {
+    styleEl = document.createElement('style');
+    // Стиль живёт в <head>, но текст страницы не трогает: ::highlight()
+    // красит диапазоны, а не элементы.
+    document.head.appendChild(styleEl);
+  }
+
+  styleEl.textContent = `
+    ::highlight(${LAYERS.active}) { background: ${colors.active}; }
+    ::highlight(${LAYERS.seen})   { background: ${colors.seen}; text-decoration: underline; }
+    ::highlight(${LAYERS.error})  { background: ${colors.error}; }
+  `;
+}
+
+function layer(name) {
+  let h = CSS.highlights.get(name);
+  if (!h) {
+    h = new Highlight();
+    h.priority = PRIORITY[name];
+    CSS.highlights.set(name, h);
+  }
+  return h;
+}
+
+function only(name, range) {
+  const h = layer(name);
+  h.clear();
+  h.add(range);
+}
+
+export function markActive(range) { only(LAYERS.active, range); }
+export function markError(range) { only(LAYERS.error, range); }
+
+/** След копится за сеанс, поэтому add, а не замена. */
+export function markSeen(range) { layer(LAYERS.seen).add(range); }
+
+export function clearActive() { CSS.highlights.delete(LAYERS.active); }
+export function clearError() { CSS.highlights.delete(LAYERS.error); }
+
+export function clearAll() {
+  for (const name of Object.values(LAYERS)) {
+    CSS.highlights.delete(name);
+  }
+}
+```
+
+- [ ] **Step 5: Убедиться, что тесты проходят**
+
+Run: `NODE_PATH=$HOME/.local/opt/node/lib/node_modules npm run test:dom`
+Expected: PASS, 5 тестов
+
+- [ ] **Step 6: Коммит**
+
+```bash
+git add src/content/highlight.js tests/dom/highlight.test.js tests/dom/fixtures/plain.html
+git commit -m "Слои подсветки без изменения разметки
+
+Отдельным тестом закреплена главная гарантия: outerHTML абзаца до и
+после подсветки совпадает побайтово."
+```
+
+---
+
+### Task 9: Наведение — задержка и точка в тексте
+
+**Files:**
+- Create: `src/content/hover.js`
+- Test: `tests/dom/hover.test.js`
+
+**Interfaces:**
+- Consumes: ничего
+- Produces:
+  - `rangeAtPoint(doc, x, y) → Range | null`
+  - `closestBlock(node) → Element | null`
+  - `watchDwell(doc, delayMs, onDwell) → () => void` — возвращает функцию отписки; `onDwell({x, y})`
+
+- [ ] **Step 1: Написать падающий тест**
+
+```js
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { chromium } from 'playwright';
+import { pathToFileURL } from 'node:url';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
+const here = path.dirname(new URL(import.meta.url).pathname);
+const fixture = pathToFileURL(path.join(here, 'fixtures/plain.html')).href;
+const source = readFileSync(path.join(here, '../../src/content/hover.js'), 'utf8');
+
+async function open(browser) {
+  const page = await browser.newPage();
+  await page.goto(fixture);
+  await page.addScriptTag({
+    content: source.replace(/^export /gm, '') +
+      '\nwindow.HV = { rangeAtPoint, closestBlock, watchDwell };' +
+      '\nwindow.fired = [];',
+    type: 'module',
+  });
+  await page.waitForFunction(() => !!window.HV);
+  return page;
+}
+
+test('точка в тексте даёт текстовый узел и смещение', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser);
+  const box = await page.locator('#p').boundingBox();
+  const got = await page.evaluate(([x, y]) => {
+    const r = window.HV.rangeAtPoint(document, x, y);
+    return r ? { node: r.startContainer.nodeName, offset: r.startOffset } : null;
+  }, [box.x + 30, box.y + 8]);
+
+  assert.equal(got.node, '#text');
+  assert.ok(Number.isInteger(got.offset));
+  await browser.close();
+});
+
+test('точка вне текста даёт null', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser);
+  const got = await page.evaluate(() => window.HV.rangeAtPoint(document, 5000, 5000));
+  assert.equal(got, null);
+  await browser.close();
+});
+
+test('ближайший блок найден', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser);
+  const id = await page.evaluate(() => {
+    const tn = document.getElementById('p').firstChild;
+    return window.HV.closestBlock(tn).id;
+  });
+  assert.equal(id, 'p');
+  await browser.close();
+});
+
+// Ради этого и задержка: проводка мышью через абзац не должна стоить
+// ни одного запроса.
+test('движение без остановки не срабатывает', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser);
+  await page.evaluate(() => window.HV.watchDwell(document, 300, (p) => window.fired.push(p)));
+
+  const box = await page.locator('#p').boundingBox();
+  for (let i = 0; i < 12; i++) {
+    await page.mouse.move(box.x + 10 + i * 20, box.y + 8);
+    await page.waitForTimeout(40);
+  }
+  assert.deepEqual(await page.evaluate(() => window.fired), []);
+  await browser.close();
+});
+
+test('остановка дольше задержки срабатывает один раз', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser);
+  await page.evaluate(() => window.HV.watchDwell(document, 150, (p) => window.fired.push(p)));
+
+  const box = await page.locator('#p').boundingBox();
+  await page.mouse.move(box.x + 40, box.y + 8);
+  await page.waitForTimeout(500);
+
+  assert.equal((await page.evaluate(() => window.fired)).length, 1);
+  await browser.close();
+});
+
+test('отписка выключает слежение', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser);
+  await page.evaluate(() => {
+    const stop = window.HV.watchDwell(document, 100, (p) => window.fired.push(p));
+    stop();
+  });
+  const box = await page.locator('#p').boundingBox();
+  await page.mouse.move(box.x + 40, box.y + 8);
+  await page.waitForTimeout(400);
+
+  assert.deepEqual(await page.evaluate(() => window.fired), []);
+  await browser.close();
+});
+```
+
+- [ ] **Step 2: Убедиться, что тест падает**
+
+Run: `NODE_PATH=$HOME/.local/opt/node/lib/node_modules npm run test:dom`
+Expected: FAIL — `src/content/hover.js` не читается
+
+- [ ] **Step 3: Реализовать**
+
+```js
+/**
+ * Всё, что связано с курсором: где он стоит и когда он замер.
+ *
+ * Модуль ничего не знает ни о переводе, ни о подсветке — только о
+ * странице и мыши.
+ */
+
+/** Теги, внутри которых переводить нечего. */
+const SKIP = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'INPUT', 'CODE', 'PRE']);
+
+/**
+ * Текстовая позиция под точкой экрана.
+ *
+ * caretRangeFromPoint — нестандартный, но в Chrome он есть и работает;
+ * расширение и так только для Chrome.
+ */
+export function rangeAtPoint(doc, x, y) {
+  const range = doc.caretRangeFromPoint(x, y);
+
+  if (!range || range.startContainer.nodeType !== Node.TEXT_NODE) {
+    return null;
+  }
+
+  const parent = range.startContainer.parentElement;
+  if (parent && SKIP.has(parent.tagName)) {
+    return null;
+  }
+
+  return range;
+}
+
+/** Ближайший блочный предок — единица для режима абзаца. */
+export function closestBlock(node) {
+  let el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+
+  while (el && el !== document.body) {
+    const display = getComputedStyle(el).display;
+    if (display === 'block' || display === 'list-item' || display === 'table-cell') {
+      return el;
+    }
+    el = el.parentElement;
+  }
+
+  return el;
+}
+
+/**
+ * Зовёт onDwell, когда курсор простоял на месте delayMs.
+ *
+ * Отсчёт сбрасывается любым движением: иначе проводка мышью через абзац
+ * выстрелила бы десятком запросов — ровно то, от чего уходим.
+ *
+ * @returns {() => void} отписка
+ */
+export function watchDwell(doc, delayMs, onDwell) {
+  let timer = null;
+
+  const onMove = (e) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => onDwell({ x: e.clientX, y: e.clientY }), delayMs);
+  };
+
+  const onLeave = () => clearTimeout(timer);
+
+  doc.addEventListener('mousemove', onMove, { passive: true });
+  doc.addEventListener('mouseleave', onLeave, { passive: true });
+  doc.addEventListener('scroll', onLeave, { passive: true, capture: true });
+
+  return () => {
+    clearTimeout(timer);
+    doc.removeEventListener('mousemove', onMove);
+    doc.removeEventListener('mouseleave', onLeave);
+    doc.removeEventListener('scroll', onLeave, { capture: true });
+  };
+}
+```
+
+- [ ] **Step 4: Убедиться, что тесты проходят**
+
+Run: `NODE_PATH=$HOME/.local/opt/node/lib/node_modules npm run test:dom`
+Expected: PASS
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add src/content/hover.js tests/dom/hover.test.js
+git commit -m "Задержка курсора и позиция в тексте
+
+Тестом закреплено, что проводка мышью через абзац не вызывает ни
+одного срабатывания: иначе каждое движение стоило бы запроса."
+```
+
+---
+
+### Task 10: Тултип в shadow DOM
+
+**Files:**
+- Create: `src/content/tooltip.js`, `tests/dom/fixtures/hostile.html`
+- Test: `tests/dom/tooltip.test.js`
+
+**Interfaces:**
+- Consumes: ничего
+- Produces: `createTooltip(doc) → {showLoading(rect), showResult(rect, {translation, note}), showError(rect, message), hide(), destroy()}`
+  где `rect` — объект с `left`, `top`, `bottom`, `width` (то есть `DOMRect` от `Range.getBoundingClientRect()`)
+
+- [ ] **Step 1: Завести враждебную страницу**
+
+`tests/dom/fixtures/hostile.html` — сайт, чьи стили ломают чужую вёрстку:
+
+```html
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  /* Так выглядит сайт, который красит всё подряд. Тултип обязан устоять. */
+  * { color: red !important; font-size: 40px !important; background: black !important; }
+  div { display: none !important; }
+</style>
+<p id="p">Vino a casa muy tarde. Luego cenamos juntos.</p>
+```
+
+- [ ] **Step 2: Написать падающий тест**
+
+```js
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { chromium } from 'playwright';
+import { pathToFileURL } from 'node:url';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
+const here = path.dirname(new URL(import.meta.url).pathname);
+const source = readFileSync(path.join(here, '../../src/content/tooltip.js'), 'utf8');
+const url = (f) => pathToFileURL(path.join(here, 'fixtures', f)).href;
+
+async function open(browser, fixture) {
+  const page = await browser.newPage();
+  await page.goto(url(fixture));
+  await page.addScriptTag({
+    content: source.replace(/^export /gm, '') + '\nwindow.T = createTooltip(document);',
+    type: 'module',
+  });
+  await page.waitForFunction(() => !!window.T);
+  return page;
+}
+
+const rect = { left: 20, top: 40, bottom: 60, width: 200 };
+
+test('показывает перевод и пометку', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser, 'plain.html');
+  const text = await page.evaluate((r) => {
+    window.T.showResult(r, { translation: 'Пришёл домой поздно.', note: 'vino — от venir' });
+    return document.querySelector('podskazka-tip').shadowRoot.textContent;
+  }, rect);
+
+  assert.ok(text.includes('Пришёл домой поздно.'));
+  assert.ok(text.includes('vino — от venir'));
+  await browser.close();
+});
+
+// Пустую пометку показывать нечего — пустая строка в тултипе выглядит
+// как обрезанный текст.
+test('пустая пометка не рисуется', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser, 'plain.html');
+  const has = await page.evaluate((r) => {
+    window.T.showResult(r, { translation: 'Привет', note: '' });
+    return !!document.querySelector('podskazka-tip').shadowRoot.querySelector('.note');
+  }, rect);
+
+  assert.equal(has, false);
+  await browser.close();
+});
+
+test('показывает ожидание и ошибку', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser, 'plain.html');
+  const states = await page.evaluate((r) => {
+    const sr = () => document.querySelector('podskazka-tip').shadowRoot.textContent;
+    window.T.showLoading(r); const loading = sr();
+    window.T.showError(r, 'Закончился баланс'); const error = sr();
+    return { loading, error };
+  }, rect);
+
+  assert.ok(states.loading.length > 0);
+  assert.ok(states.error.includes('Закончился баланс'));
+  await browser.close();
+});
+
+test('hide убирает тултип с глаз', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser, 'plain.html');
+  const visible = await page.evaluate((r) => {
+    window.T.showResult(r, { translation: 'Привет', note: '' });
+    window.T.hide();
+    const host = document.querySelector('podskazka-tip');
+    return getComputedStyle(host).display !== 'none';
+  }, rect);
+
+  assert.equal(visible, false);
+  await browser.close();
+});
+
+// Ради этого тултип и живёт в shadow DOM: стили сайта не должны его
+// доставать. Страница hostile.html красит всё подряд с !important.
+test('стили враждебного сайта не достают тултип', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser, 'hostile.html');
+  const style = await page.evaluate((r) => {
+    window.T.showResult(r, { translation: 'Привет', note: '' });
+    const host = document.querySelector('podskazka-tip');
+    const inner = host.shadowRoot.querySelector('.body');
+    const cs = getComputedStyle(inner);
+    return { color: cs.color, fontSize: cs.fontSize, display: getComputedStyle(host).display };
+  }, rect);
+
+  assert.notEqual(style.color, 'rgb(255, 0, 0)', 'цвет сайта не должен протечь');
+  assert.notEqual(style.fontSize, '40px', 'размер шрифта сайта не должен протечь');
+  assert.notEqual(style.display, 'none', 'правило сайта не должно спрятать тултип');
+  await browser.close();
+});
+```
+
+- [ ] **Step 3: Убедиться, что тест падает**
+
+Run: `NODE_PATH=$HOME/.local/opt/node/lib/node_modules npm run test:dom`
+Expected: FAIL — `src/content/tooltip.js` не читается
+
+- [ ] **Step 4: Реализовать**
+
+```js
+/**
+ * Тултип с переводом.
+ *
+ * Живёт в shadow DOM: сайты сплошь и рядом красят всё подряд через
+ * `* { ... !important }`, и без изоляции тултип либо раскрашивается в
+ * цвета сайта, либо вовсе прячется правилом вроде `div { display: none }`.
+ * Проверяется на hostile.html, где ровно это и сделано.
+ */
+
+const CSS_TEXT = `
+  :host { all: initial; }
+  .body {
+    position: fixed;
+    z-index: 2147483647;
+    max-width: 420px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: #1f2430;
+    color: #f2f4f8;
+    font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
+    box-shadow: 0 6px 24px rgba(0,0,0,.35);
+  }
+  .note {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid rgba(255,255,255,.18);
+    color: #c9d1e1;
+    font-size: 13px;
+  }
+  .err { color: #ffb4b4; }
+`;
+
+export function createTooltip(doc) {
+  const host = doc.createElement('podskazka-tip');
+  // Элемент с неизвестным сайту именем: его собственные селекторы по
+  // div/p/span в него не попадут даже без shadow DOM.
+  host.style.setProperty('display', 'block', 'important');
+  const root = host.attachShadow({ mode: 'open' });
+
+  const style = doc.createElement('style');
+  style.textContent = CSS_TEXT;
+
+  const body = doc.createElement('div');
+  body.className = 'body';
+
+  root.append(style, body);
+  doc.documentElement.append(host);
+
+  function place(rect) {
+    host.style.setProperty('display', 'block', 'important');
+    body.style.left = `${Math.max(8, rect.left)}px`;
+    body.style.top = `${rect.bottom + 8}px`;
+  }
+
+  return {
+    showLoading(rect) {
+      body.textContent = 'Перевожу…';
+      place(rect);
+    },
+
+    showResult(rect, { translation, note }) {
+      body.textContent = '';
+
+      const main = doc.createElement('div');
+      main.textContent = translation;
+      body.append(main);
+
+      // Пустую пометку не рисуем: она выглядит как обрезанный текст.
+      if (note) {
+        const n = doc.createElement('div');
+        n.className = 'note';
+        n.textContent = note;
+        body.append(n);
+      }
+
+      place(rect);
+    },
+
+    showError(rect, message) {
+      body.textContent = '';
+      const e = doc.createElement('div');
+      e.className = 'err';
+      e.textContent = message;
+      body.append(e);
+      place(rect);
+    },
+
+    hide() {
+      host.style.setProperty('display', 'none', 'important');
+    },
+
+    destroy() {
+      host.remove();
+    },
+  };
+}
+```
+
+- [ ] **Step 5: Убедиться, что тесты проходят**
+
+Run: `NODE_PATH=$HOME/.local/opt/node/lib/node_modules npm run test:dom`
+Expected: PASS
+
+- [ ] **Step 6: Коммит**
+
+```bash
+git add src/content/tooltip.js tests/dom/tooltip.test.js tests/dom/fixtures/hostile.html
+git commit -m "Тултип в shadow DOM
+
+Проверяется на странице, которая красит всё подряд через !important и
+прячет div'ы: без изоляции тултип там либо перекрашивался, либо
+исчезал вовсе."
+```
+
+---
+
+### Task 11: Связка контент-скрипта и manifest
+
+Первая задача, после которой расширение можно поставить в браузер и потрогать руками.
+
+**Files:**
+- Create: `src/content/index.js`, `manifest.json`
+- Test: `tests/dom/flow.test.js`
+
+**Interfaces:**
+- Consumes: `unitBounds` (Task 1), `markActive`/`markSeen`/`markError`/`clearActive`/`installStyles` (Task 8), `rangeAtPoint`/`closestBlock`/`watchDwell` (Task 9), `createTooltip` (Task 10)
+- Produces: `start(deps) → () => void`, где `deps = {doc, settings, ask}` и `ask(text) → Promise<{ok, translation, note, code, message}>`
+
+`ask` внедряется параметром: в браузере это обёртка над `chrome.runtime.sendMessage`, в тесте — подделка. Так весь ход «навёл → подсветилось → перевелось → показалось» проверяется без расширения и без сети.
+
+- [ ] **Step 1: Написать падающий тест**
+
+```js
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { chromium } from 'playwright';
+import { pathToFileURL } from 'node:url';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
+const here = path.dirname(new URL(import.meta.url).pathname);
+const root = path.join(here, '../..');
+const read = (p) => readFileSync(path.join(root, p), 'utf8').replace(/^(export |import .*\n)/gm, '');
+
+// Модули склеиваются в один скрипт: в тесте нет сборщика, а порядок
+// известен заранее.
+const BUNDLE = [
+  'src/content/segment.js',
+  'src/content/highlight.js',
+  'src/content/hover.js',
+  'src/content/tooltip.js',
+  'src/content/index.js',
+].map(read).join('\n');
+
+async function open(browser, { answer }) {
+  const page = await browser.newPage();
+  await page.goto(pathToFileURL(path.join(here, 'fixtures/plain.html')).href);
+  await page.addScriptTag({
+    content: BUNDLE + `
+      window.asked = [];
+      window.stop = start({
+        doc: document,
+        settings: { granularity: 'sentence', lang: 'es', targetLang: 'ru', dwellMs: 100,
+                    colorActive: '#ffe08a', colorSeen: '#d9f2d9', colorError: '#ffd6d6' },
+        ask: async (text) => { window.asked.push(text); return (${answer}); },
+      });`,
+    type: 'module',
+  });
+  await page.waitForFunction(() => !!window.stop);
+  return page;
+}
+
+const OK = `{ ok: true, translation: 'Пришёл домой очень поздно.', note: 'vino — от venir' }`;
+
+test('наведение переводит то предложение, на которое навели', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser, { answer: OK });
+  const box = await page.locator('#p').boundingBox();
+
+  await page.mouse.move(box.x + 30, box.y + 10);
+  await page.waitForFunction(() => window.asked.length > 0, null, { timeout: 3000 });
+
+  const asked = await page.evaluate(() => window.asked);
+  assert.equal(asked[0], 'Vino a casa muy tarde, porque el tren se retrasó.');
+  await browser.close();
+});
+
+test('перевод доезжает до тултипа', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser, { answer: OK });
+  const box = await page.locator('#p').boundingBox();
+
+  await page.mouse.move(box.x + 30, box.y + 10);
+  await page.waitForFunction(
+    () => document.querySelector('podskazka-tip')?.shadowRoot.textContent.includes('Пришёл'),
+    null, { timeout: 3000 }
+  );
+  await browser.close();
+});
+
+// Главная гарантия спеки — проверяем её на полном ходе, а не только на
+// подсветке в отрыве.
+test('после полного прохода разметка страницы прежняя', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser, { answer: OK });
+  const before = await page.$eval('#p', (el) => el.outerHTML);
+  const box = await page.locator('#p').boundingBox();
+
+  await page.mouse.move(box.x + 30, box.y + 10);
+  await page.waitForFunction(() => window.asked.length > 0, null, { timeout: 3000 });
+
+  assert.equal(await page.$eval('#p', (el) => el.outerHTML), before);
+  await browser.close();
+});
+
+test('переведённое место остаётся в следе', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser, { answer: OK });
+  const box = await page.locator('#p').boundingBox();
+
+  await page.mouse.move(box.x + 30, box.y + 10);
+  await page.waitForFunction(() => window.asked.length > 0, null, { timeout: 3000 });
+  await page.waitForFunction(() => CSS.highlights.get('podskazka-seen')?.size > 0, null, { timeout: 3000 });
+  await browser.close();
+});
+
+test('ошибка показывается человеку, а не глотается', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser, { answer: `{ ok: false, code: 'quota', message: 'Закончился баланс' }` });
+  const box = await page.locator('#p').boundingBox();
+
+  await page.mouse.move(box.x + 30, box.y + 10);
+  await page.waitForFunction(
+    () => document.querySelector('podskazka-tip')?.shadowRoot.textContent.includes('баланс'),
+    null, { timeout: 3000 }
+  );
+  await browser.close();
+});
+
+// Один и тот же кусок под курсором не должен спрашиваться повторно при
+// каждом дрожании мыши внутри него.
+test('повторное наведение на то же место не спрашивает заново', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser, { answer: OK });
+  const box = await page.locator('#p').boundingBox();
+
+  await page.mouse.move(box.x + 30, box.y + 10);
+  await page.waitForFunction(() => window.asked.length > 0, null, { timeout: 3000 });
+  await page.mouse.move(box.x + 34, box.y + 10);
+  await page.waitForTimeout(400);
+
+  assert.equal((await page.evaluate(() => window.asked)).length, 1);
+  await browser.close();
+});
+```
+
+- [ ] **Step 2: Убедиться, что тест падает**
+
+Run: `NODE_PATH=$HOME/.local/opt/node/lib/node_modules npm run test:dom`
+Expected: FAIL — `src/content/index.js` не читается
+
+- [ ] **Step 3: Реализовать связку**
+
+```js
+import { unitBounds } from './segment.js';
+import { installStyles, markActive, markSeen, markError, clearActive } from './highlight.js';
+import { rangeAtPoint, closestBlock, watchDwell } from './hover.js';
+import { createTooltip } from './tooltip.js';
+
+/**
+ * Связка контент-скрипта.
+ *
+ * ask внедряется параметром — в браузере это обёртка над
+ * chrome.runtime.sendMessage, в тестах подделка. Поэтому весь ход
+ * «навёл → подсветилось → перевелось → показалось» проверяется без
+ * расширения и без сети.
+ */
+export function start({ doc, settings, ask }) {
+  installStyles({
+    active: settings.colorActive,
+    seen: settings.colorSeen,
+    error: settings.colorError,
+  });
+
+  const tip = createTooltip(doc);
+
+  // Текст последней единицы: мышь дрожит внутри одного предложения, и
+  // спрашивать его заново на каждое дрожание незачем.
+  let lastText = null;
+
+  const stop = watchDwell(doc, settings.dwellMs, async ({ x, y }) => {
+    const caret = rangeAtPoint(doc, x, y);
+    if (!caret) {
+      clearActive();
+      tip.hide();
+      lastText = null;
+      return;
+    }
+
+    const block = closestBlock(caret.startContainer);
+    const node = caret.startContainer;
+
+    const bounds = unitBounds(node.textContent, caret.startOffset, {
+      granularity: settings.granularity,
+      lang: settings.lang,
+    });
+    if (!bounds) {
+      return;
+    }
+
+    const range = doc.createRange();
+    if (settings.granularity === 'paragraph' && block) {
+      range.selectNodeContents(block);
+    } else {
+      range.setStart(node, bounds.start);
+      range.setEnd(node, bounds.end);
+    }
+
+    const text = range.toString().trim();
+    if (!text || text === lastText) {
+      return;
+    }
+    lastText = text;
+
+    markActive(range);
+    const rect = range.getBoundingClientRect();
+    tip.showLoading(rect);
+
+    const answer = await ask(text);
+
+    // Пока ждали ответ, курсор мог уехать на другое место.
+    if (lastText !== text) {
+      return;
+    }
+
+    if (answer.ok) {
+      tip.showResult(rect, { translation: answer.translation, note: answer.note });
+      markSeen(range);
+    } else {
+      tip.showError(rect, answer.message);
+      markError(range);
+    }
+  });
+
+  return () => {
+    stop();
+    tip.destroy();
+    clearActive();
+  };
+}
+```
+
+- [ ] **Step 4: Убедиться, что тесты проходят**
+
+Run: `NODE_PATH=$HOME/.local/opt/node/lib/node_modules npm run test:dom`
+Expected: PASS, 6 тестов
+
+- [ ] **Step 5: Завести manifest.json и точку входа контент-скрипта**
+
+`manifest.json`:
+
+```json
+{
+  "manifest_version": 3,
+  "name": "Подсказка",
+  "version": "0.1.0",
+  "description": "Перевод предложения под курсором, без изменения страницы.",
+  "permissions": ["storage", "unlimitedStorage", "alarms"],
+  "host_permissions": ["https://api.openai.com/*"],
+  "background": { "service_worker": "src/bg/index.js", "type": "module" },
+  "options_page": "src/options/options.html",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/content/boot.js"],
+      "type": "module",
+      "run_at": "document_idle"
+    }
+  ]
+}
+```
+
+`src/content/boot.js` — связывает `start` с настоящими настройками и воркером:
+
+```js
+import { start } from './index.js';
+
+const DEFAULTS_FALLBACK = {
+  granularity: 'sentence', targetLang: 'ru', dwellMs: 300,
+  colorActive: '#ffe08a', colorSeen: '#d9f2d9', colorError: '#ffd6d6',
+};
+
+(async () => {
+  const { settings } = await chrome.storage.local.get('settings');
+  const s = { ...DEFAULTS_FALLBACK, ...(settings ?? {}) };
+
+  start({
+    doc: document,
+    settings: { ...s, lang: document.documentElement.lang || 'es' },
+    ask: (text) => chrome.runtime.sendMessage({ type: 'translate', text, targetLang: s.targetLang }),
+  });
+})();
+```
+
+- [ ] **Step 6: Поставить в браузер и потрогать руками**
+
+Открыть `chrome://extensions`, включить режим разработчика, «Загрузить распакованное» → папка проекта. Открыть любую испанскую страницу, задержать курсор на предложении. Без ключа ожидается тултип «Не задан ключ API» — это и есть правильный результат на этом шаге.
+
+- [ ] **Step 7: Коммит**
+
+```bash
+git add src/content/index.js src/content/boot.js manifest.json tests/dom/flow.test.js
+git commit -m "Связка контент-скрипта и манифест
+
+Расширение ставится в браузер и работает целиком. Тест проходит весь
+ход от наведения до тултипа с подставным переводчиком и отдельно
+проверяет, что разметка страницы после полного прохода не изменилась."
+```
+
+---
+
+### Task 12: Страница настроек
+
+**Files:**
+- Create: `src/options/options.html`, `src/options/options.js`
+- Test: `tests/dom/options.test.js`
+
+**Interfaces:**
+- Consumes: `DEFAULTS` (Task 6)
+- Produces: `fillForm(doc, settings) → void`, `readForm(doc) → settings`
+
+Логика формы вынесена в чистые функции, чтобы проверять её без `chrome`.
+
+- [ ] **Step 1: Написать падающий тест**
+
+```js
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { chromium } from 'playwright';
+import { pathToFileURL } from 'node:url';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
+const here = path.dirname(new URL(import.meta.url).pathname);
+const root = path.join(here, '../..');
+const page_ = pathToFileURL(path.join(root, 'src/options/options.html')).href;
+const source = readFileSync(path.join(root, 'src/options/options.js'), 'utf8')
+  .replace(/^(export |import .*\n)/gm, '');
+
+async function open(browser) {
+  const page = await browser.newPage();
+  await page.goto(page_);
+  await page.addScriptTag({ content: source + '\nwindow.F = { fillForm, readForm };', type: 'module' });
+  await page.waitForFunction(() => !!window.F);
+  return page;
+}
+
+test('форма заполняется настройками', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser);
+  const vals = await page.evaluate(() => {
+    window.F.fillForm(document, { apiKey: 'sk-x', model: 'gpt-4o', targetLang: 'en',
+      granularity: 'paragraph', dwellMs: 500, ttlDays: 7, wantNote: false,
+      colorActive: '#111111', colorSeen: '#222222', colorError: '#333333' });
+    return {
+      key: document.getElementById('apiKey').value,
+      model: document.getElementById('model').value,
+      gran: document.getElementById('granularity').value,
+      note: document.getElementById('wantNote').checked,
+    };
+  });
+  assert.equal(vals.key, 'sk-x');
+  assert.equal(vals.model, 'gpt-4o');
+  assert.equal(vals.gran, 'paragraph');
+  assert.equal(vals.note, false);
+  await browser.close();
+});
+
+test('прочитанное из формы совпадает с записанным', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser);
+  const out = await page.evaluate(() => {
+    const s = { apiKey: 'sk-y', model: 'gpt-4o-mini', targetLang: 'ru',
+      granularity: 'sentence', dwellMs: 250, ttlDays: 14, wantNote: true,
+      colorActive: '#ffe08a', colorSeen: '#d9f2d9', colorError: '#ffd6d6' };
+    window.F.fillForm(document, s);
+    return window.F.readForm(document);
+  });
+  assert.equal(out.apiKey, 'sk-y');
+  assert.equal(out.dwellMs, 250);
+  assert.equal(out.ttlDays, 14);
+  assert.equal(out.wantNote, true);
+  await browser.close();
+});
+
+// Модель должна и выбираться из списка, и вписываться руками:
+// провайдеры меняют названия чаще, чем выходят версии расширения.
+test('модель можно вписать свою', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser);
+  const got = await page.evaluate(() => {
+    document.getElementById('model').value = 'какая-то-новая-модель';
+    return window.F.readForm(document).model;
+  });
+  assert.equal(got, 'какая-то-новая-модель');
+  await browser.close();
+});
+
+test('числовые поля приходят числами, а не строками', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser);
+  const t = await page.evaluate(() => {
+    document.getElementById('dwellMs').value = '400';
+    const r = window.F.readForm(document);
+    return typeof r.dwellMs;
+  });
+  assert.equal(t, 'number');
+  await browser.close();
+});
+```
+
+- [ ] **Step 2: Убедиться, что тест падает**
+
+Run: `NODE_PATH=$HOME/.local/opt/node/lib/node_modules npm run test:dom`
+Expected: FAIL — `src/options/options.html` не открывается
+
+- [ ] **Step 3: Создать страницу**
+
+`src/options/options.html`:
+
+```html
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<title>Подсказка — настройки</title>
+<style>
+  body { font: 14px/1.6 -apple-system, "Segoe UI", Roboto, sans-serif; max-width: 560px; margin: 24px auto; padding: 0 16px; }
+  label { display: block; margin: 14px 0 4px; font-weight: 600; }
+  input, select { width: 100%; padding: 6px 8px; font: inherit; box-sizing: border-box; }
+  input[type=checkbox] { width: auto; }
+  input[type=color] { height: 34px; padding: 2px; }
+  .hint { color: #666; font-weight: 400; font-size: 13px; }
+  .row { display: flex; gap: 12px; }
+  .row > div { flex: 1; }
+  button { margin-top: 20px; padding: 8px 16px; font: inherit; }
+  #saved { margin-left: 10px; color: #2a7; }
+</style>
+
+<h1>Подсказка</h1>
+
+<label for="apiKey">Ключ OpenAI <span class="hint">хранится только в этом браузере</span></label>
+<input id="apiKey" type="password" placeholder="sk-…">
+
+<label for="model">Модель <span class="hint">можно выбрать из списка или вписать своё название</span></label>
+<input id="model" list="models" placeholder="gpt-4o-mini">
+<datalist id="models">
+  <option value="gpt-4o-mini"></option>
+  <option value="gpt-4o"></option>
+  <option value="gpt-4.1-mini"></option>
+</datalist>
+
+<label for="targetLang">Переводить на</label>
+<input id="targetLang" placeholder="ru">
+
+<label for="granularity">Что брать под курсором</label>
+<select id="granularity">
+  <option value="sentence">Предложение</option>
+  <option value="paragraph">Абзац</option>
+</select>
+
+<div class="row">
+  <div>
+    <label for="dwellMs">Задержка, мс</label>
+    <input id="dwellMs" type="number" min="100" max="2000" step="50">
+  </div>
+  <div>
+    <label for="ttlDays">Хранить переводы, дней</label>
+    <input id="ttlDays" type="number" min="1" max="365">
+  </div>
+</div>
+
+<label><input id="wantNote" type="checkbox"> Пояснять грамматику и идиомы</label>
+
+<div class="row">
+  <div><label for="colorActive">Под курсором</label><input id="colorActive" type="color"></div>
+  <div><label for="colorSeen">Уже переведено</label><input id="colorSeen" type="color"></div>
+  <div><label for="colorError">Ошибка</label><input id="colorError" type="color"></div>
+</div>
+
+<button id="save">Сохранить</button><span id="saved" hidden>Сохранено</span>
+<button id="clearCache">Очистить кэш переводов</button>
+
+<script type="module" src="options.js"></script>
+</html>
+```
+
+- [ ] **Step 4: Реализовать options.js**
+
+```js
+import { DEFAULTS, loadSettings, saveSettings } from '../bg/settings.js';
+
+const TEXT = ['apiKey', 'model', 'targetLang', 'granularity', 'colorActive', 'colorSeen', 'colorError'];
+const NUM = ['dwellMs', 'ttlDays'];
+
+export function fillForm(doc, s) {
+  for (const id of TEXT) doc.getElementById(id).value = s[id];
+  for (const id of NUM) doc.getElementById(id).value = s[id];
+  doc.getElementById('wantNote').checked = s.wantNote;
+}
+
+export function readForm(doc) {
+  const out = {};
+  for (const id of TEXT) out[id] = doc.getElementById(id).value;
+  // Поля number отдают строку; в настройках нужны числа, иначе
+  // ttlDays * DAY даст строку и срок жизни посчитается неверно.
+  for (const id of NUM) out[id] = Number(doc.getElementById(id).value);
+  out.wantNote = doc.getElementById('wantNote').checked;
+  return out;
+}
+
+// В тестах модуль подключается отдельно, без chrome — тогда привязку
+// к странице не вешаем.
+if (typeof chrome !== 'undefined' && chrome.storage) {
+  (async () => {
+    fillForm(document, await loadSettings(chrome.storage.local));
+
+    document.getElementById('save').addEventListener('click', async () => {
+      await saveSettings(chrome.storage.local, readForm(document));
+      const saved = document.getElementById('saved');
+      saved.hidden = false;
+      setTimeout(() => { saved.hidden = true; }, 1500);
+    });
+
+    document.getElementById('clearCache').addEventListener('click', async () => {
+      const all = await chrome.storage.local.get(null);
+      const keys = Object.keys(all).filter((k) => k.startsWith('podskazka:'));
+      await chrome.storage.local.remove(keys);
+      alert(`Удалено записей: ${keys.length}`);
+    });
+  })();
+}
+```
+
+- [ ] **Step 5: Убедиться, что тесты проходят**
+
+Run: `NODE_PATH=$HOME/.local/opt/node/lib/node_modules npm run test:dom`
+Expected: PASS
+
+- [ ] **Step 6: Коммит**
+
+```bash
+git add src/options/ tests/dom/options.test.js
+git commit -m "Страница настроек: ключ, модель, режим, цвета, кэш
+
+Модель и списком, и свободным вводом: провайдеры меняют названия
+чаще, чем выходят версии расширения."
+```
+
+---
+
+### Task 13: Живая проверка по флагу
+
+Один тест, который действительно ходит в OpenAI. По умолчанию пропускается, чтобы обычный прогон не стоил денег и не падал без сети.
+
+**Files:**
+- Test: `tests/unit/live.test.js`
+
+**Interfaces:**
+- Consumes: `translate` (Task 5)
+- Produces: ничего
+
+- [ ] **Step 1: Написать тест**
+
+```js
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { translate } from '../../src/bg/translate.js';
+
+const live = process.env.PODSKAZKA_LIVE === '1' && process.env.OPENAI_API_KEY;
+
+// Единственный тест, который тратит деньги. Включается явно:
+//   PODSKAZKA_LIVE=1 OPENAI_API_KEY=sk-... npm test
+// Нужен, чтобы заметить, если формат запроса или ответа у провайдера
+// разойдётся с тем, что собрано в prompt.js. Подделки этого не поймают.
+test('живой вызов возвращает разумный перевод', { skip: !live }, async () => {
+  const r = await translate({
+    text: 'Vino a casa muy tarde, porque el tren se retrasó.',
+    targetLang: 'ru',
+    model: 'gpt-4o-mini',
+    apiKey: process.env.OPENAI_API_KEY,
+    wantNote: true,
+  });
+
+  assert.ok(r.translation.length > 10, 'перевод не должен быть пустым');
+  assert.match(r.translation, /[а-яё]/i, 'перевод должен быть на русском');
+  assert.equal(typeof r.note, 'string');
+});
+```
+
+- [ ] **Step 2: Убедиться, что без флага тест пропускается**
+
+Run: `npm test`
+Expected: PASS, в выводе `skipped 1`
+
+- [ ] **Step 3: Прогнать живьём один раз**
+
+Run: `PODSKAZKA_LIVE=1 OPENAI_API_KEY=<ключ> node --test tests/unit/live.test.js`
+Expected: PASS. Если упало — сверить `prompt.js` с текущим форматом API.
+
+- [ ] **Step 4: Коммит**
+
+```bash
+git add tests/unit/live.test.js
+git commit -m "Живая проверка вызова OpenAI, по флагу
+
+Подделки не заметят, если формат запроса или ответа у провайдера
+разойдётся с нашим. Этот тест заметит, но денег стоит только когда
+его просят явно."
+```
+
+---
+
+### Task 14: README и прогон всего
+
+**Files:**
+- Create: `README.md`
+
+- [ ] **Step 1: Написать README**
+
+```markdown
+# Подсказка
+
+Расширение Chrome для чтения в оригинале. Курсор задержался на непонятном
+месте — появился перевод этого предложения и короткая пометка о том, что в
+нём легко понять неправильно.
+
+Страница при этом не меняется: ни одного своего тега в чужой разметке.
+
+## Установка
+
+1. `chrome://extensions` → включить режим разработчика
+2. «Загрузить распакованное» → папка этого репозитория
+3. Открыть настройки расширения, вписать ключ OpenAI
+
+## Настройки
+
+Ключ, модель (по умолчанию `gpt-4o-mini`, можно вписать любую), язык
+перевода, режим (предложение или абзац), задержка курсора, срок хранения
+переводов, цвета подсветки, кнопка очистки кэша.
+
+## Как устроено
+
+- `src/content/` — всё, что касается страницы: наведение, нарезка,
+  подсветка, тултип. Ключа API не видит и в сеть не ходит.
+- `src/bg/` — кэш, настройки, обращение к модели.
+- `src/options/` — страница настроек.
+
+Переводы кэшируются по хэшу «текст + язык + модель», поэтому одна и та же
+фраза на разных страницах оплачивается один раз. Срок хранения — 30 дней,
+уборка раз в сутки.
+
+## Тесты
+
+```bash
+npm test                                                    # чистые функции
+NODE_PATH=$HOME/.local/opt/node/lib/node_modules npm run test:dom   # поведение в браузере
+PODSKAZKA_LIVE=1 OPENAI_API_KEY=sk-... npm test             # плюс живой вызов
+```
+```
+
+- [ ] **Step 2: Прогнать всё**
+
+Run:
+```bash
+npm test
+NODE_PATH=$HOME/.local/opt/node/lib/node_modules npm run test:dom
+```
+Expected: оба набора зелёные
+
+- [ ] **Step 3: Коммит**
+
+```bash
+git add README.md
+git commit -m "README: установка, устройство, прогон тестов"
+```
+
+---
+
+## Самопроверка плана
+
+**Покрытие спеки.**
+
+| Раздел спеки | Задача |
+|---|---|
+| Почему не обёртка в теги | 8 (тест на неизменность `outerHTML`), 11 (он же на полном ходе) |
+| `caretRangeFromPoint` | 9 |
+| `Intl.Segmenter` + склейка сокращений | 1 |
+| CSS Custom Highlight API | 8 |
+| Режимы предложение / абзац | 1 (границы), 11 (выбор блока) |
+| Задержка | 9 |
+| Цвета и состояния | 8 (слои и приоритет), 12 (настройка цветов) |
+| Контент-скрипт не видит ключ | 11 (`ask` ходит через сообщение), 7 (ключ только в воркере) |
+| Хранилище и кэш, ключ по хэшу | 2, 3 |
+| Срок жизни и уборка | 3, 7 (будильник) |
+| Запрос строгим JSON | 4 |
+| Ошибки, `insufficient_quota` отдельно | 5, 11 (показ в тултипе) |
+| Настройки, модель по умолчанию и переключаемая | 6, 12 |
+| Проверка: чистые функции, Playwright, живой вызов по флагу | 1–7, 8–12, 13 |
+
+Непокрытых требований спеки не осталось.
+
+**Согласованность имён.** `unitBounds`, `cacheKey`, `cacheGet`/`cacheSet`/`cacheSweep`, `buildBody`/`parseAnswer`, `translate`/`TranslateError`, `DEFAULTS`/`loadSettings`/`saveSettings`, `handleTranslate`, `LAYERS`/`installStyles`/`markActive`/`markSeen`/`markError`/`clearActive`/`clearError`/`clearAll`, `rangeAtPoint`/`closestBlock`/`watchDwell`, `createTooltip`, `start`, `fillForm`/`readForm` — каждое объявлено в своей задаче и вызывается под тем же именем в последующих.
+
+**Заглушек нет.** В каждом шаге стоит код, который нужно написать, и команда, которой он проверяется.
+
+---
+
+## Открытые вопросы
+
+Ни один из них не блокирует начало работы: на каждый в плане заложено
+разумное умолчание, менять его дёшево.
+
+1. **Подсветка.** Сейчас светится только место под курсором плюс след
+   уже переведённого. Вариант «заранее разметить все предложения»
+   потребовал бы сканировать страницу вперёд и вернул бы минусы обёртки
+   в теги. Оставляем как есть?
+2. **Чем вызывать.** Сейчас достаточно задержки курсора. Нужна ли
+   клавиша-модификатор (Alt), чтобы тултипы не выскакивали при обычном
+   чтении?
+3. **Где работать.** Сейчас расширение включено на всех сайтах. Делать
+   ли список разрешённых?
+4. **Язык страницы.** Сейчас берётся из `<html lang>`, а при его
+   отсутствии считается испанским. Для нарезки этого хватает, но на
+   странице без `lang` с другим языком нарезка будет чуть хуже.
+   Достаточно?
+5. **Ключ API.** Лежит в хранилище расширения: доступен любому, у кого
+   есть доступ к профилю браузера. Для личного инструмента нормально?
