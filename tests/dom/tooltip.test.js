@@ -121,11 +121,29 @@ test('стили враждебного сайта не достают тулт�
     const host = document.querySelector('glosst-tip');
     const inner = host.shadowRoot.querySelector('.body');
     const cs = getComputedStyle(inner);
-    return { color: cs.color, fontSize: cs.fontSize, display: getComputedStyle(host).display };
+    const box = inner.getBoundingClientRect();
+    return {
+      color: cs.color,
+      fontSize: cs.fontSize,
+      display: cs.display,
+      width: Math.round(box.width),
+      height: Math.round(box.height),
+    };
   }, rect);
 
-  assert.notEqual(style.color, 'rgb(255, 0, 0)', 'цвет сайта не должен протечь');
-  assert.notEqual(style.fontSize, '40px', 'размер шрифта сайта не должен протечь');
-  assert.notEqual(style.display, 'none', 'правило сайта не должно спрятать тултип');
+  // Сперва убеждаемся, что тултип вообще нарисовался. Иначе проверки
+  // «цвет не сайта» и «не спрятан» выполняются и для отсутствующего
+  // элемента: «не красный» верно и для того, чего нет.
+  assert.ok(style.width > 0 && style.height > 0, 'тултип должен занимать место');
+
+  // Значения СВОИ, а не «не такие, как у сайта»: notEqual прошёл бы и
+  // на пустой строке.
+  assert.equal(style.color, 'rgb(242, 244, 248)', 'цвет должен остаться наш');
+  assert.equal(style.fontSize, '14px', 'размер шрифта должен остаться наш');
+
+  // display меряем у ВНУТРЕННЕГО div. Правило сайта div{display:none}
+  // по самому <glosst-tip> не бьёт никогда — он не div, — поэтому
+  // прежняя проверка у host проходила и без всякой изоляции.
+  assert.equal(style.display, 'block', 'правило сайта не должно спрятать тултип');
   await browser.close();
 });
