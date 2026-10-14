@@ -1,0 +1,9 @@
+{
+  "name": "glosst",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/unit/*.test.js",
+    "test:dom": "node --test tests/dom/*.test.js"
+  }
+}
