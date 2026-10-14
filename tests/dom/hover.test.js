@@ -41,6 +41,24 @@ test('точка в тексте даёт текстовый узел и сме�
   await browser.close();
 });
 
+// Подсветчики синтаксиса оборачивают каждое слово в span, поэтому у
+// текста внутри <code> непосредственный родитель — span. Проверка
+// одного родителя такой код пропускала бы, и наведение на блок кода
+// уходило бы в перевод: и бессмысленно, и платно.
+test('внутри кода диапазона нет, даже во вложенном span', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser);
+  const box = await page.locator('#code span').boundingBox();
+
+  const isNull = await page.evaluate(
+    ([x, y]) => window.HV.rangeAtPoint(document, x, y) === null,
+    [box.x + 4, box.y + box.height / 2]
+  );
+
+  assert.equal(isNull, true, 'текст внутри <code> не должен давать диапазон');
+  await browser.close();
+});
+
 test('точка вне текста даёт null', async () => {
   const browser = await chromium.launch();
   const page = await open(browser);

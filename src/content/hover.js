@@ -5,8 +5,16 @@
  * странице, мыши и клавише.
  */
 
-/** Теги, внутри которых переводить нечего. */
-const SKIP = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'INPUT', 'CODE', 'PRE']);
+/**
+ * Где переводить нечего.
+ *
+ * Селектор, а не набор имён, потому что проверять надо ВСЮ цепочку
+ * предков, а не одного родителя. Подсветчики синтаксиса заворачивают
+ * каждое слово в свой span: у текста внутри
+ * `<pre><code><span>const</span></code></pre>` родитель — span, и
+ * проверка одного родителя такой код пропускала бы на перевод.
+ */
+const SKIP_SELECTOR = 'script, style, noscript, textarea, input, code, pre';
 
 /** Поле события и имя клавиши для каждого модификатора. */
 const MODIFIER_FLAG = { alt: 'altKey', ctrl: 'ctrlKey', shift: 'shiftKey' };
@@ -26,7 +34,7 @@ export function rangeAtPoint(doc, x, y) {
   }
 
   const parent = range.startContainer.parentElement;
-  if (parent && SKIP.has(parent.tagName)) {
+  if (parent && parent.closest(SKIP_SELECTOR)) {
     return null;
   }
 
