@@ -9,8 +9,8 @@ const here = path.dirname(new URL(import.meta.url).pathname);
 const source = readFileSync(path.join(here, '../../src/content/tooltip.js'), 'utf8');
 const url = (f) => pathToFileURL(path.join(here, 'fixtures', f)).href;
 
-async function open(browser, fixture) {
-  const page = await browser.newPage();
+async function open(browser, fixture, viewport) {
+  const page = await browser.newPage(viewport ? { viewport } : undefined);
   await page.goto(url(fixture));
   await page.addScriptTag({
     content: source.replace(/^export /gm, '') + '\nwindow.T = createTooltip(document);',
@@ -40,11 +40,16 @@ test('показывает перевод и пометку', async () => {
 test('пустая пометка не рисуется', async () => {
   const browser = await chromium.launch();
   const page = await open(browser, 'plain.html');
-  const has = await page.evaluate((r) => {
+  const { has, text } = await page.evaluate((r) => {
     window.T.showResult(r, { translation: 'Привет', note: '' });
-    return !!document.querySelector('glosst-tip').shadowRoot.querySelector('.note');
+    const sr = document.querySelector('glosst-tip').shadowRoot;
+    return { has: !!sr.querySelector('.note'), text: sr.textContent };
   }, rect);
 
+  // Позитивный контроль: без него showResult, вообще ничего не
+  // нарисовавший, тоже проходил бы этот тест — отсутствие .note верно
+  // и для пустого тултипа.
+  assert.ok(text.includes('Привет'), 'сам перевод обязан быть на месте');
   assert.equal(has, false);
   await browser.close();
 });
@@ -145,5 +150,34 @@ test('стили враждебного сайта не достают тулт�
   // по самому <glosst-tip> не бьёт никогда — он не div, — поэтому
   // прежняя проверка у host проходила и без всякой изоляции.
   assert.equal(style.display, 'block', 'правило сайта не должно спрятать тултип');
+  await browser.close();
+});
+
+// place() раньше клампил только левый край и только опускал тултип
+// вниз от диапазона: у нижнего края экрана тултип уходил ниже
+// viewport целиком (измерено — низ на 723px при высоте окна 720px).
+test('у нижнего края окна тултип не вылезает за пределы viewport', async () => {
+  const browser = await chromium.launch();
+  const viewport = { width: 800, height: 600 };
+  const page = await open(browser, 'plain.html', viewport);
+
+  // Диапазон почти у самого низа и почти у правого края окна —
+  // ровно то место, где раньше и уходил за границы по обеим осям.
+  const bottomRightRect = { left: 760, top: 580, bottom: 592, width: 10 };
+
+  const box = await page.evaluate((r) => {
+    window.T.showResult(r, {
+      translation: 'Довольно длинный перевод, чтобы тултип занял заметную высоту и ширину.',
+      note: 'и пометка тоже, чтобы высота была ощутимой',
+    });
+    const body = document.querySelector('glosst-tip').shadowRoot.querySelector('.body');
+    const b = body.getBoundingClientRect();
+    return { top: b.top, left: b.left, right: b.right, bottom: b.bottom };
+  }, bottomRightRect);
+
+  assert.ok(box.top >= 0, `верх тултипа ушёл за край окна: ${box.top}`);
+  assert.ok(box.left >= 0, `левый край тултипа ушёл за окно: ${box.left}`);
+  assert.ok(box.right <= viewport.width, `тултип вылез за правый край: ${box.right} > ${viewport.width}`);
+  assert.ok(box.bottom <= viewport.height, `тултип вылез за нижний край: ${box.bottom} > ${viewport.height}`);
   await browser.close();
 });

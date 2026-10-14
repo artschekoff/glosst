@@ -69,10 +69,39 @@ export function createTooltip(doc) {
   root.append(style, body);
   doc.documentElement.append(host);
 
+  const MARGIN = 8;
+
+  /**
+   * Ставит тултип рядом с диапазоном, не давая ему вылезти за края
+   * окна. Раньше клампился только левый край и только снизу вниз:
+   * на обычной странице, ближе к низу экрана, тултип уходил ниже
+   * viewport (измерено — низ тултипа на 723px при высоте окна 720px).
+   */
   function place(rect) {
     host.style.setProperty('display', 'block', 'important');
-    body.style.left = `${Math.max(8, rect.left)}px`;
-    body.style.top = `${rect.bottom + 8}px`;
+
+    // Содержимое (showResult/showError/...) уже записано к этому
+    // моменту, так что offsetWidth/offsetHeight — реальные размеры
+    // тултипа, а не угадывание.
+    const view = doc.defaultView ?? window;
+    const width = body.offsetWidth;
+    const height = body.offsetHeight;
+
+    let left = Math.max(MARGIN, rect.left);
+    left = Math.min(left, view.innerWidth - width - MARGIN);
+    left = Math.max(MARGIN, left);
+
+    let top = rect.bottom + MARGIN;
+    const fitsBelow = top + height <= view.innerHeight - MARGIN;
+    if (!fitsBelow) {
+      // Не влезает снизу — переворачиваем над диапазоном.
+      top = rect.top - MARGIN - height;
+    }
+    top = Math.min(top, view.innerHeight - height - MARGIN);
+    top = Math.max(MARGIN, top);
+
+    body.style.left = `${left}px`;
+    body.style.top = `${top}px`;
   }
 
   return {
