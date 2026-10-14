@@ -55,11 +55,6 @@ function shouldMerge(prev, next) {
  *
  * @returns {{index: number, segment: string}[]}
  */
-/**
- * Предложения с их смещениями, уже склеенные по сокращениям.
- *
- * @returns {{index: number, segment: string}[]}
- */
 function sentences(text, lang) {
   const raw = [...new Intl.Segmenter(lang, { granularity: 'sentence' }).segment(text)];
   const out = [];
@@ -115,7 +110,11 @@ export function unitBounds(text, offset, opts) {
   // offset < end. А каретка сразу за последним символом — обычное
   // положение при наведении на конец абзаца, и молчать тут нельзя.
   if (offset === text.length && list.length > 0) {
-    return trimmedBounds(list[list.length - 1]);
+    const last = trimmedBounds(list[list.length - 1]);
+    // Текст из одних пробелов обрезается в ничто: пустой диапазон — не
+    // единица перевода, и отвечать на него надо так же, как на всё
+    // прочее несуществующее.
+    return last.end > last.start ? last : null;
   }
 
   return null;
