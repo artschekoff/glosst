@@ -11,8 +11,10 @@
     {
       "matches": ["<all_urls>"],
       "js": ["src/content/boot.js"],
-      "type": "module",
       "run_at": "document_idle"
     }
+  ],
+  "web_accessible_resources": [
+    { "resources": ["src/content/*.js"], "matches": ["<all_urls>"] }
   ]
 }
