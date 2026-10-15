@@ -18,7 +18,7 @@ const source = strip('src/bg/settings.js') + '\n' + strip('src/options/labels.js
 async function open(browser) {
   const page = await browser.newPage();
   await page.goto(page_);
-  await page.addScriptTag({ content: source + '\nwindow.F = { fillForm, readForm, DEFAULTS, applyModifierLabels, modifierLabels };', type: 'module' });
+  await page.addScriptTag({ content: source + '\nwindow.F = { fillForm, readForm, DEFAULTS, applyModifierLabels, modifierLabels, selectPane, wirePanes };', type: 'module' });
   await page.waitForFunction(() => !!window.F);
   return page;
 }
@@ -173,5 +173,52 @@ test('клавиши подписаны по системе', async () => {
   assert.deepEqual(got.mac.map(([v]) => v), got.win.map(([v]) => v));
   assert.deepEqual(got.mac.map(([v]) => v), ['alt', 'ctrl', 'meta', 'shift', 'none']);
 
+  await browser.close();
+});
+
+// Разделы слева, настройки справа. Проверяем не «класс поменялся», а
+// что видно ровно одну панель и что кнопка помечена выбранной —
+// иначе тест прошёл бы и при двух открытых панелях сразу.
+test('разделы переключаются, видна ровно одна панель', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser);
+
+  const got = await page.evaluate(() => {
+    window.F.wirePanes(document);
+    const state = () => ({
+      видно: [...document.querySelectorAll('.pane')].filter((p) => !p.hidden).map((p) => p.id),
+      выбрано: [...document.querySelectorAll('.side button')]
+        .filter((b) => b.getAttribute('aria-selected') === 'true')
+        .map((b) => b.dataset.pane),
+    });
+
+    const начало = state();
+    document.querySelector('.side button[data-pane="data"]').click();
+    const после = state();
+    return { начало, после };
+  });
+
+  assert.deepEqual(got.начало.видно, ['pane-translate'], 'сперва открыт перевод');
+  assert.deepEqual(got.начало.выбрано, ['translate']);
+  assert.deepEqual(got.после.видно, ['pane-data'], 'после клика только данные');
+  assert.deepEqual(got.после.выбрано, ['data']);
+
+  await browser.close();
+});
+
+// Поля не должны потеряться при переносе в разделы: по этим
+// идентификаторам работают и сохранение, и остальные тесты.
+test('все поля настроек на месте после перекройки страницы', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser);
+
+  const пропали = await page.evaluate(() => {
+    const нужны = ['apiKey', 'model', 'targetLang', 'granularity', 'modifier',
+      'dwellMs', 'ttlDays', 'wantNote', 'colorActive', 'colorSeen', 'colorError',
+      'save', 'saved', 'clearCache', 'clearLangs'];
+    return нужны.filter((id) => !document.getElementById(id));
+  });
+
+  assert.deepEqual(пропали, [], 'ни одно поле не должно пропасть');
   await browser.close();
 });

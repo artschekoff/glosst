@@ -31,12 +31,36 @@ export function readForm(doc) {
   return out;
 }
 
+/**
+ * Показать один раздел и спрятать остальные.
+ *
+ * Чистая функция от документа: проверяется без chrome и без сети.
+ * Выбор отмечается через aria-selected, а не классом, — так состояние
+ * видно и программам чтения с экрана, а не только глазом.
+ */
+export function selectPane(doc, name) {
+  for (const button of doc.querySelectorAll('.side button')) {
+    button.setAttribute('aria-selected', String(button.dataset.pane === name));
+  }
+  for (const pane of doc.querySelectorAll('.pane')) {
+    pane.hidden = pane.id !== `pane-${name}`;
+  }
+}
+
+/** Подписать кнопки разделов. Вызывается и в тестах, и на странице. */
+export function wirePanes(doc) {
+  for (const button of doc.querySelectorAll('.side button')) {
+    button.addEventListener('click', () => selectPane(doc, button.dataset.pane));
+  }
+}
+
 // В тестах модуль подключается отдельно, без chrome — тогда привязку
 // к странице не вешаем.
 if (typeof chrome !== 'undefined' && chrome.storage) {
   (async () => {
     // Подписи клавиш — до заполнения: иначе выбранное значение
     // отрисуется с чужим названием.
+    wirePanes(document);
     applyModifierLabels(document, isMacPlatform(navigator));
     fillForm(document, await loadSettings(chrome.storage.local));
 
