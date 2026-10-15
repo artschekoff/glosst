@@ -48,3 +48,36 @@ test('расширение реально запускается на стран
   const hasTip = await page.evaluate(() => !!document.querySelector('glosst-tip'));
   assert.ok(hasTip, 'контент-скрипт обязан был вставить хост тултипа — доказательство, что он реально выполнился');
 });
+
+/**
+ * Врезки — отдельный документ, и контент-скрипт в них по умолчанию НЕ
+ * попадает: без `all_frames` Chrome внедряет его только в верхний
+ * документ. Человек этого не знает и видит просто «на этой странице
+ * плагин не работает».
+ */
+test('расширение работает и внутри врезки', async (t) => {
+  const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'glosst-frames-'));
+  const context = await chromium.launchPersistentContext(profileDir, {
+    channel: 'chromium',
+    args: [`--disable-extensions-except=${root}`, `--load-extension=${root}`],
+  });
+  t.after(() => context.close());
+
+  const page = await context.newPage();
+  await page.goto(pathToFileURL(path.join(here, 'fixtures/framed.html')).href);
+  await page.waitForTimeout(2000);
+
+  const inner = page.frames().find((f) => f !== page.mainFrame());
+  assert.ok(inner, 'врезка должна была найтись');
+
+  assert.equal(
+    await page.evaluate(() => !!document.querySelector('glosst-tip')),
+    true,
+    'в основном документе расширение должно быть'
+  );
+  assert.equal(
+    await inner.evaluate(() => !!document.querySelector('glosst-tip')),
+    true,
+    'внутри врезки расширение тоже должно быть'
+  );
+});
