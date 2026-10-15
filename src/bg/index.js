@@ -13,6 +13,16 @@ const ROUTES = {
     lang: await getSiteLang(chrome.storage.local, msg.origin),
   }),
 
+  // Открываем свою страницу просмотра из воркера, а не из
+  // контент-скрипта: переход на chrome-extension:// со страницы сайта
+  // браузер бы не пустил.
+  openViewer: async (msg) => {
+    const url = chrome.runtime.getURL('src/viewer/viewer.html')
+      + '?file=' + encodeURIComponent(msg.file);
+    await chrome.tabs.create({ url });
+    return { ok: true };
+  },
+
   setSiteLang: async (msg) => {
     await setSiteLang(chrome.storage.local, msg.origin, msg.lang);
     return { ok: true };

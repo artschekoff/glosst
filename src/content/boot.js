@@ -9,6 +9,24 @@ const FALLBACK = {
 };
 
 (async () => {
+  const { isPdfDocument, mountPdfButton } = await import(
+    chrome.runtime.getURL('src/content/pdfbutton.js')
+  );
+
+  // На вкладке с PDF переводить нечего: текст лежит в кадре встроенного
+  // просмотрщика, куда расширению хода нет. Поэтому здесь не обычный
+  // запуск, а кнопка — открыть документ там, где перевод работает.
+  //
+  // Только в верхнем кадре: во вложенных кнопка была бы мусором.
+  if (isPdfDocument(document)) {
+    if (window.top === window) {
+      mountPdfButton(document, (url) => {
+        chrome.runtime.sendMessage({ type: 'openViewer', file: url });
+      });
+    }
+    return;
+  }
+
   // Статический import здесь невозможен: Chrome внедряет контент-скрипт
   // обычным скриптом, ключа "type":"module" у content_scripts нет. Через
   // динамический import остальные модули остаются ES-модулями, а файлы

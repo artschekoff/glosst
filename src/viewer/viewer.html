@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Glosst — Document</title>
+<style>
+  :root {
+    color-scheme: light;
+    --ink: #1b1d21;
+    --ink-soft: #6b7280;
+    --line: #e5e7eb;
+    --bg: #f6f7f9;
+    --card: #fff;
+    --accent: #2f6fd0;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 14px/1.55 -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--line);
+    background: var(--card);
+  }
+
+  header .name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+  }
+
+  header .hint { color: var(--ink-soft); font-size: 13px; }
+
+  main { padding: 20px; }
+
+  .page {
+    position: relative;
+    width: max-content;
+    margin: 0 auto 20px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .page canvas { display: block; }
+
+  /*
+   * Слой текста PDF.js: сами буквы прозрачны, видимые нарисованы на
+   * canvas ниже. Этот слой нужен, чтобы текст можно было выделять — и
+   * чтобы по нему работал перевод.
+   */
+  .textLayer {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    line-height: 1;
+    opacity: 1;
+    forced-color-adjust: none;
+  }
+
+  .textLayer span,
+  .textLayer br {
+    position: absolute;
+    color: transparent;
+    white-space: pre;
+    cursor: text;
+    transform-origin: 0 0;
+  }
+
+  .status {
+    max-width: 560px;
+    margin: 60px auto;
+    padding: 20px 24px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--card);
+    text-align: center;
+  }
+
+  .status h1 { margin: 0 0 8px; font-size: 18px; }
+  .status p { margin: 0; color: var(--ink-soft); }
+  .status code {
+    display: inline-block;
+    margin-top: 10px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--bg);
+    font-size: 13px;
+  }
+</style>
+
+<header>
+  <span class="name" id="name">Glosst</span>
+  <span class="hint" id="hint"></span>
+</header>
+
+<main id="main"></main>
+
+<script type="module" src="viewer.js"></script>
+</html>
