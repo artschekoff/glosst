@@ -1,7 +1,7 @@
 import { unitBounds } from './segment.js';
 import { pageLang, LANG_CHOICES } from './lang.js';
 import { installStyles, markActive, markSeen, markError, clearActive, clearError } from './highlight.js';
-import { rangeAtPoint, closestBlock, watchDwell } from './hover.js';
+import { rangeAtPoint, closestBlock, watchDwell, selectionRange } from './hover.js';
 import { createTooltip } from './tooltip.js';
 
 /**
@@ -112,8 +112,26 @@ export function start({ doc, settings, ask, getLang, setLang }) {
     },
   });
 
-  async function handleDwell({ x, y }) {
-    const caret = rangeAtPoint(doc, x, y);
+  async function handleDwell(point) {
+    // Выделение — прямое указание человека, и оно главнее наведения:
+    // границы он задал сам и видит их глазами. Нарезка на предложения
+    // здесь не участвует, единицей становится ровно выделенное.
+    const picked = selectionRange(doc);
+    if (picked) {
+      const lang = await resolveLang();
+      if (lang) {
+        await translateRange(picked, lang);
+      }
+      return;
+    }
+
+    // Выделения нет — тогда нужна позиция курсора: без неё непонятно,
+    // куда смотрит человек, и переводить нечего.
+    if (!point) {
+      return;
+    }
+
+    const caret = rangeAtPoint(doc, point.x, point.y);
     if (!caret) {
       clearActive();
       clearError();
@@ -147,7 +165,7 @@ export function start({ doc, settings, ask, getLang, setLang }) {
         lastText = null;
         // Человек уже навёл на нужное место — продолжаем с него же,
         // не заставляя наводить заново.
-        const again = rangeAtPoint(doc, x, y);
+        const again = rangeAtPoint(doc, point.x, point.y);
         if (again) {
           const b = unitBounds(again.startContainer.textContent, again.startOffset, {
             granularity: settings.granularity,

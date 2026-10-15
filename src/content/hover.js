@@ -54,6 +54,28 @@ const BLOCK_DISPLAYS = new Set([
 ]);
 
 /**
+ * Диапазон, который человек выделил мышью, если он есть.
+ *
+ * Выделение — прямое указание «переводи вот это»: границы человек
+ * видит глазами до того, как заплатит, и может захватить сколько
+ * нужно, хоть через границы абзацев. Нарезка на предложения в этом
+ * случае не участвует вовсе.
+ *
+ * null означает «выделения нет». Свёрнутое выделение (просто курсор) и
+ * пустое по тексту идут сюда же: переводить нечего.
+ */
+export function selectionRange(doc) {
+  const sel = doc.getSelection();
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+    return null;
+  }
+
+  const range = sel.getRangeAt(0);
+  return range.toString().trim() ? range : null;
+}
+
+
+/**
  * Ближайший блочный предок — единица для режима абзаца.
  *
  * Если до document.body дошли, не встретив ни одного подходящего
@@ -96,10 +118,13 @@ export function watchDwell(doc, { delayMs, modifier, onDwell, onCancel = () => {
   const held = (e) => flag === null || e[flag] === true;
 
   const arm = () => {
-    if (!last) return;
     clearTimeout(timer);
-    const { x, y } = last;
-    timer = setTimeout(() => onDwell({ x, y }), delayMs);
+    // Позиция курсора может быть неизвестна: клавишу можно нажать, ни
+    // разу не двинув мышью — например выделив текст с клавиатуры. Для
+    // выделения координаты не нужны вовсе, поэтому передаём как есть, а
+    // решает уже вызывающий.
+    const point = last ? { x: last.x, y: last.y } : null;
+    timer = setTimeout(() => onDwell(point), delayMs);
   };
 
   const disarm = () => clearTimeout(timer);

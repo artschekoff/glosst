@@ -275,3 +275,50 @@ test('режим абзаца внутри inline-block берёт блок, а 
   );
   await browser.close();
 });
+
+// Выделение плюс клавиша: человек сам показывает, что переводить, и
+// видит это глазами до того, как заплатит. Нарезка на предложения тут
+// не участвует вовсе — единицей становится ровно выделенное, хоть
+// через границы абзацев.
+test('выделенное переводится целиком, а не по предложению', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser, { answer: OK, fixture: 'spanish.html' });
+
+  await page.evaluate(() => {
+    const node = document.getElementById('p').firstChild;
+    const range = document.createRange();
+    range.setStart(node, 0);
+    range.setEnd(node, node.length);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  });
+
+  await page.keyboard.down('Alt');
+  await page.waitForFunction(() => window.asked.length > 0, null, { timeout: 3000 });
+  await page.keyboard.up('Alt');
+
+  const asked = await page.evaluate(() => window.asked);
+  const весь = await page.evaluate(() => document.getElementById('p').textContent.trim());
+
+  assert.equal(asked.length, 1, 'на одно выделение — один запрос');
+  assert.equal(asked[0].text, весь, 'уйти должно всё выделенное, а не первое предложение');
+  await browser.close();
+});
+
+// Без выделения всё работает как прежде: быстрая фраза по наведению.
+// Иначе правка сломала бы основной путь ради нового.
+test('без выделения наведение работает по-прежнему', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser, { answer: OK, fixture: 'spanish.html' });
+
+  await page.evaluate(() => window.getSelection().removeAllRanges());
+  await hover(page);
+
+  await page.waitForFunction(() => window.asked.length > 0, null, { timeout: 3000 });
+  const asked = await page.evaluate(() => window.asked);
+
+  assert.equal(asked[0].text, 'Vino a casa muy tarde, porque el tren se retrasó.',
+    'по наведению по-прежнему одно предложение');
+  await browser.close();
+});
