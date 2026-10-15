@@ -19,6 +19,39 @@ const PRIORITY = { [LAYERS.seen]: 1, [LAYERS.error]: 2, [LAYERS.active]: 3 };
 let styleEl = null;
 
 /** Оформление слоёв. Цвета настраиваемые: на тёмной теме умолчания слепнут. */
+/**
+ * Доля непрозрачности подсветки.
+ *
+ * Сплошная заливка закрывает текст там, где сам текст прозрачный, а
+ * видимые глифы нарисованы ниже: так устроен просмотрщик PDF — буквы
+ * на canvas, а поверх невидимый слой для выделения. Подсветка такого
+ * слоя ложится ПОВЕРХ картинки, и строка превращается в цветную
+ * полосу без текста. Полупрозрачность пропускает глифы наружу и на
+ * обычных страницах читается не хуже сплошной.
+ */
+const ALPHA = 0.35;
+
+/**
+ * Перевести #rrggbb (или #rgb) в rgba с прозрачностью.
+ *
+ * Значение не из hex возвращается как есть: подставить в CSS битое
+ * правило хуже, чем оставить непрозрачный, но рабочий цвет.
+ */
+export function withAlpha(color, alpha) {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(color).trim());
+  if (!m) {
+    return color;
+  }
+
+  let hex = m[1];
+  if (hex.length === 3) {
+    hex = hex.split('').map((c) => c + c).join('');
+  }
+
+  const n = parseInt(hex, 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
 export function installStyles(colors) {
   if (!styleEl) {
     styleEl = document.createElement('style');
@@ -28,9 +61,9 @@ export function installStyles(colors) {
   }
 
   styleEl.textContent = `
-    ::highlight(${LAYERS.active}) { background: ${colors.active}; }
-    ::highlight(${LAYERS.seen})   { background: ${colors.seen}; text-decoration: underline; }
-    ::highlight(${LAYERS.error})  { background: ${colors.error}; }
+    ::highlight(${LAYERS.active}) { background: ${withAlpha(colors.active, ALPHA)}; }
+    ::highlight(${LAYERS.seen})   { background: ${withAlpha(colors.seen, ALPHA)}; text-decoration: underline; }
+    ::highlight(${LAYERS.error})  { background: ${withAlpha(colors.error, ALPHA)}; }
   `;
 }
 
