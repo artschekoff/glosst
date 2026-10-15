@@ -17,8 +17,8 @@
 const SKIP_SELECTOR = 'script, style, noscript, textarea, input, code, pre';
 
 /** Поле события и имя клавиши для каждого модификатора. */
-const MODIFIER_FLAG = { alt: 'altKey', ctrl: 'ctrlKey', shift: 'shiftKey' };
-const MODIFIER_KEY = { alt: 'Alt', ctrl: 'Control', shift: 'Shift' };
+const MODIFIER_FLAG = { alt: 'altKey', ctrl: 'ctrlKey', shift: 'shiftKey', meta: 'metaKey' };
+const MODIFIER_KEY = { alt: 'Alt', ctrl: 'Control', shift: 'Shift', meta: 'Meta' };
 
 /**
  * Текстовая позиция под точкой экрана.

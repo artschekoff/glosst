@@ -12,12 +12,13 @@ const strip = (p) => readFileSync(path.join(root, p), 'utf8').replace(/^(export 
 // settings.js подключаем первым: readForm обращается к DEFAULTS для
 // клампа пустых числовых полей, а import-строка сама по себе из
 // склейки вырезается.
-const source = strip('src/bg/settings.js') + '\n' + strip('src/options/options.js');
+const source = strip('src/bg/settings.js') + '\n' + strip('src/options/labels.js')
+  + '\n' + strip('src/options/options.js');
 
 async function open(browser) {
   const page = await browser.newPage();
   await page.goto(page_);
-  await page.addScriptTag({ content: source + '\nwindow.F = { fillForm, readForm, DEFAULTS };', type: 'module' });
+  await page.addScriptTag({ content: source + '\nwindow.F = { fillForm, readForm, DEFAULTS, applyModifierLabels, modifierLabels };', type: 'module' });
   await page.waitForFunction(() => !!window.F);
   return page;
 }
@@ -139,5 +140,38 @@ test('опустошённое числовое поле возвращаетс�
   assert.equal(out.ttlDays, (await page.evaluate(() => window.F.DEFAULTS.ttlDays)));
   assert.notEqual(out.dwellMs, 0);
   assert.notEqual(out.ttlDays, 0);
+  await browser.close();
+});
+
+// Подписывать маководу «Alt» неверно: такой клавиши у него на
+// клавиатуре нет. Проверяем, что названия и правда меняются, а значения
+// при этом остаются прежними — на них завязаны и настройки, и код.
+test('клавиши подписаны по системе', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser);
+
+  const got = await page.evaluate(() => {
+    const read = () => [...document.getElementById('modifier').options]
+      .map((o) => [o.value, o.textContent]);
+
+    window.F.applyModifierLabels(document, true);
+    const mac = read();
+    window.F.applyModifierLabels(document, false);
+    const win = read();
+    return { mac, win };
+  });
+
+  const macText = Object.fromEntries(got.mac);
+  const winText = Object.fromEntries(got.win);
+
+  assert.match(macText.alt, /Option/, 'на Mac это Option, а не Alt');
+  assert.match(macText.meta, /Command/);
+  assert.equal(winText.alt, 'Alt');
+  assert.match(winText.meta, /Win/);
+
+  // Значения трогать нельзя: по ним хранятся настройки.
+  assert.deepEqual(got.mac.map(([v]) => v), got.win.map(([v]) => v));
+  assert.deepEqual(got.mac.map(([v]) => v), ['alt', 'ctrl', 'meta', 'shift', 'none']);
+
   await browser.close();
 });

@@ -1,5 +1,6 @@
 import { DEFAULTS, loadSettings, saveSettings } from '../bg/settings.js';
 import { clearSiteLangs } from '../bg/sitelang.js';
+import { applyModifierLabels, isMacPlatform } from './labels.js';
 
 const TEXT = ['apiKey', 'model', 'targetLang', 'granularity', 'modifier', 'colorActive', 'colorSeen', 'colorError'];
 const NUM = ['dwellMs', 'ttlDays'];
@@ -34,6 +35,9 @@ export function readForm(doc) {
 // к странице не вешаем.
 if (typeof chrome !== 'undefined' && chrome.storage) {
   (async () => {
+    // Подписи клавиш — до заполнения: иначе выбранное значение
+    // отрисуется с чужим названием.
+    applyModifierLabels(document, isMacPlatform(navigator));
     fillForm(document, await loadSettings(chrome.storage.local));
 
     document.getElementById('save').addEventListener('click', async () => {
