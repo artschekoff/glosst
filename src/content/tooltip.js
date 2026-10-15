@@ -164,6 +164,21 @@ export function createTooltip(doc) {
       place(rect);
     },
 
+    /**
+     * Прямоугольник подсказки или null, когда она спрятана.
+     *
+     * Нужен вызывающему: подсказка встаёт вплотную под разобранным
+     * местом, и движение мыши к ней — это ещё не «ушёл». Без этого
+     * она гасла бы ровно в тот момент, когда к ней тянешься.
+     */
+    bounds() {
+      if (host.style.display === 'none') {
+        return null;
+      }
+      const r = body.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 ? r : null;
+    },
+
     hide() {
       host.style.setProperty('display', 'none', 'important');
     },

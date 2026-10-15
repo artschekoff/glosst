@@ -107,7 +107,7 @@ export function closestBlock(node) {
  *
  * @returns {() => void} отписка
  */
-export function watchDwell(doc, { delayMs, modifier, onDwell, onCancel = () => {} }) {
+export function watchDwell(doc, { delayMs, modifier, onDwell, onCancel = () => {}, onMove = () => {} }) {
   const flag = MODIFIER_FLAG[modifier] ?? null;
   const key = MODIFIER_KEY[modifier] ?? null;
   let timer = null;
@@ -129,10 +129,14 @@ export function watchDwell(doc, { delayMs, modifier, onDwell, onCancel = () => {
 
   const disarm = () => clearTimeout(timer);
 
-  const onMove = (e) => {
+  const handleMove = (e) => {
     last = { x: e.clientX, y: e.clientY };
     if (held(e)) arm();
     else disarm();
+    // О каждом движении сообщаем отдельно: показанный перевод живёт,
+    // пока курсор над ним, и гаснет, когда человек ушёл. Решает это
+    // вызывающий — ему известны границы показанного.
+    onMove({ x: last.x, y: last.y });
   };
 
   const onKeyDown = (e) => {
@@ -143,9 +147,12 @@ export function watchDwell(doc, { delayMs, modifier, onDwell, onCancel = () => {
     // Сверяемся с именем клавиши, а не с e[flag]: на keyup флаг уже
     // сброшен, и проверка «флага нет» срабатывала бы на отпускание
     // ЛЮБОЙ клавиши — набрал текст в поле, и подсказка пропала.
+    //
+    // Отпускание СНИМАЕТ ОТСЧЁТ, но не гасит уже показанный перевод:
+    // держать клавишу всё время чтения утомительно. Показанное живёт,
+    // пока курсор над ним, — за это отвечает onMove у вызывающего.
     if (key && e.key === key) {
       disarm();
-      onCancel();
     }
   };
 
@@ -154,7 +161,7 @@ export function watchDwell(doc, { delayMs, modifier, onDwell, onCancel = () => {
     onCancel();
   };
 
-  doc.addEventListener('mousemove', onMove, { passive: true });
+  doc.addEventListener('mousemove', handleMove, { passive: true });
   doc.addEventListener('keydown', onKeyDown, { passive: true });
   doc.addEventListener('keyup', onKeyUp, { passive: true });
   doc.addEventListener('mouseleave', away, { passive: true });
@@ -162,7 +169,7 @@ export function watchDwell(doc, { delayMs, modifier, onDwell, onCancel = () => {
 
   return () => {
     disarm();
-    doc.removeEventListener('mousemove', onMove);
+    doc.removeEventListener('mousemove', handleMove);
     doc.removeEventListener('keydown', onKeyDown);
     doc.removeEventListener('keyup', onKeyUp);
     doc.removeEventListener('mouseleave', away);

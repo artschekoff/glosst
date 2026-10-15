@@ -15,11 +15,12 @@ async function open(browser, { modifier = 'alt', delayMs = 150 } = {}) {
   await page.addScriptTag({
     content: source.replace(/^export /gm, '') +
       `\nwindow.HV = { rangeAtPoint, closestBlock, watchDwell };
-       window.fired = []; window.cancelled = 0;
+       window.fired = []; window.cancelled = 0; window.moves = 0;
        window.stop = watchDwell(document, {
          delayMs: ${delayMs}, modifier: '${modifier}',
          onDwell: (p) => window.fired.push(p),
          onCancel: () => window.cancelled++,
+         onMove: () => window.moves++,
        });`,
     type: 'module',
   });
@@ -138,18 +139,39 @@ test('нажатие клавиши при неподвижной мыши то�
   await browser.close();
 });
 
-test('отпускание клавиши отменяет показ', async () => {
+// Отпускание клавиши больше НЕ гасит показанное: держать её всё время
+// чтения утомительно. Оно снимает лишь незавершённый отсчёт — отпустил
+// раньше срока, значит запроса не будет.
+test('отпускание клавиши снимает незавершённый отсчёт', async () => {
   const browser = await chromium.launch();
-  const page = await open(browser);
+  const page = await open(browser, { delayMs: 400 });
   const box = await page.locator('#p').boundingBox();
 
   await page.keyboard.down('Alt');
   await page.mouse.move(box.x + 40, box.y + 8);
-  await page.waitForTimeout(400);
+  await page.waitForTimeout(120);
   await page.keyboard.up('Alt');
-  await page.waitForTimeout(100);
+  await page.waitForTimeout(500);
 
-  assert.ok((await page.evaluate(() => window.cancelled)) > 0);
+  assert.deepEqual(await page.evaluate(() => window.fired), [],
+    'отпустили до срока — запроса быть не должно');
+  assert.equal(await page.evaluate(() => window.cancelled), 0,
+    'гасить нечего: показа ещё не было');
+  await browser.close();
+});
+
+// О движениях сообщается отдельно: по ним вызывающий решает, ушёл ли
+// курсор с показанного перевода.
+test('о каждом движении мыши сообщается', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser);
+  const box = await page.locator('#p').boundingBox();
+
+  await page.mouse.move(box.x + 20, box.y + 8);
+  await page.mouse.move(box.x + 60, box.y + 8);
+  await page.waitForTimeout(120);
+
+  assert.ok((await page.evaluate(() => window.moves)) >= 2, 'движения должны доходить');
   await browser.close();
 });
 

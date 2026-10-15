@@ -25,6 +25,11 @@ export function start({ doc, settings, ask, getLang, setLang }) {
   // спрашивать его заново на каждое дрожание незачем.
   let lastText = null;
 
+  // Диапазон, перевод которого сейчас на экране. Пока курсор над ним
+  // или над самой подсказкой, показ живёт: держать клавишу всё время
+  // чтения утомительно, а отпускание больше ничего не гасит.
+  let shownRange = null;
+
   // Готовый ответ на неё же. Нужен, чтобы ту же фразу в ДРУГОМ месте
   // страницы показать сразу, не обращаясь к сети второй раз.
   let lastAnswer = null;
@@ -76,6 +81,7 @@ export function start({ doc, settings, ask, getLang, setLang }) {
   /** Показать уже готовый ответ на указанном месте. */
   function showAnswer(range, answer) {
     markActive(range);
+    shownRange = range;
     const rect = range.getBoundingClientRect();
 
     if (answer.ok) {
@@ -92,11 +98,23 @@ export function start({ doc, settings, ask, getLang, setLang }) {
     modifier: settings.modifier,
 
     onCancel() {
-      clearActive();
-      clearError();
-      tip.hide();
-      lastText = null;
-      lastAnswer = null;
+      closeShown();
+    },
+
+    onMove(point) {
+      if (!shownRange) {
+        return;
+      }
+
+      // Запас в несколько пикселей: у строки есть межстрочные
+      // просветы, и без него подсказка мигала бы на границе.
+      const pad = 8;
+      const overText = within(point, shownRange.getBoundingClientRect(), pad);
+      const overTip = within(point, tip.bounds(), pad);
+
+      if (!overText && !overTip) {
+        closeShown();
+      }
     },
 
     async onDwell(point) {
@@ -111,6 +129,28 @@ export function start({ doc, settings, ask, getLang, setLang }) {
       }
     },
   });
+
+  /** Точка внутри прямоугольника, с запасом. null-прямоугольник — мимо. */
+  function within(point, rect, pad) {
+    return Boolean(rect)
+      && point.x >= rect.left - pad && point.x <= rect.right + pad
+      && point.y >= rect.top - pad && point.y <= rect.bottom + pad;
+  }
+
+  /**
+   * Убрать показанное с экрана.
+   *
+   * lastText и lastAnswer намеренно НЕ сбрасываются: это память о уже
+   * оплаченном переводе. Если бы они стирались, уход курсора с фразы и
+   * возврат на неё же стоили бы второго запроса — и то же самое для
+   * повтора той же фразы в другом месте страницы.
+   */
+  function closeShown() {
+    clearActive();
+    clearError();
+    tip.hide();
+    shownRange = null;
+  }
 
   async function handleDwell(point) {
     // Выделение — прямое указание человека, и оно главнее наведения:

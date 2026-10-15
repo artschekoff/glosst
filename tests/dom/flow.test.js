@@ -115,11 +115,18 @@ test('ошибка показывается человеку, а не глота
     null, { timeout: 3000 }
   );
 
-  // Отпускаем Alt — onCancel обязан убрать не только активную подсветку,
-  // но и слой ошибки. clearError существовал и раньше, но его никто не
-  // звал: красная полоса на месте ошибочного перевода оставалась на весь
-  // сеанс, даже после отмены наведения.
+  // Отпускание клавиши показанное больше НЕ гасит: держать её всё
+  // чтение утомительно. Показ живёт, пока курсор над ним.
   await page.keyboard.up('Alt');
+  await page.waitForTimeout(300);
+  assert.ok(
+    (await page.evaluate(() => (CSS.highlights.get('glosst-error')?.size ?? 0))) > 0,
+    'после отпускания клавиши показанное должно остаться'
+  );
+
+  // А вот уход курсора с места — гасит, и слой ошибки в том числе.
+  // Иначе красная полоса осталась бы на весь сеанс.
+  await page.mouse.move(5, 400);
   await page.waitForFunction(
     () => (CSS.highlights.get('glosst-error')?.size ?? 0) === 0,
     null, { timeout: 3000 }
@@ -320,5 +327,48 @@ test('без выделения наведение работает по-пре�
 
   assert.equal(asked[0].text, 'Vino a casa muy tarde, porque el tren se retrasó.',
     'по наведению по-прежнему одно предложение');
+  await browser.close();
+});
+
+// Суть правки: клавишу можно отпустить и водить мышью по разобранному
+// месту — перевод никуда не девается. Палец не должен уставать.
+test('перевод держится, пока курсор над ним, и гаснет, когда ушёл', async () => {
+  const browser = await chromium.launch();
+  const page = await open(browser, { answer: OK, fixture: 'spanish.html' });
+  const box = await page.locator('#p').boundingBox();
+
+  await page.keyboard.down('Alt');
+  await page.mouse.move(box.x + 20, box.y + 8);
+  await page.waitForFunction(() => window.asked.length > 0, null, { timeout: 3000 });
+  await page.keyboard.up('Alt');
+
+  // Проверяем ВИДИМОСТЬ, а не текст: hide() прячет подсказку, но её
+  // содержимое остаётся в shadowRoot, и проверка по тексту никогда не
+  // стала бы ложной.
+  const виден = () => page.evaluate(() => {
+    const host = document.querySelector('glosst-tip');
+    if (!host || getComputedStyle(host).display === 'none') {
+      return false;
+    }
+    return host.shadowRoot.textContent.includes('Пришёл');
+  });
+
+  // Водим по той же строке, клавиша отпущена.
+  for (const dx of [40, 70, 100, 60]) {
+    await page.mouse.move(box.x + dx, box.y + 8);
+    await page.waitForTimeout(60);
+  }
+  assert.equal(await виден(), true, 'пока курсор над фразой, перевод остаётся');
+
+  // Ушли далеко — гаснет.
+  await page.mouse.move(5, 400);
+  await page.waitForFunction(() => {
+    const host = document.querySelector('glosst-tip');
+    return !host || getComputedStyle(host).display === 'none';
+  }, null, { timeout: 3000 });
+
+  assert.equal(await виден(), false, 'ушли с фразы — перевод убран');
+  assert.equal((await page.evaluate(() => window.asked)).length, 1,
+    'и всё это без единого лишнего запроса');
   await browser.close();
 });
