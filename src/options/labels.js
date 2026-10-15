@@ -39,7 +39,7 @@ export function modifierLabels(isMac) {
       meta: '⌘ Command',
       ctrl: '⌃ Control',
       shift: '⇧ Shift',
-      none: 'Без клавиши',
+      none: 'No key',
     };
   }
 
@@ -48,7 +48,7 @@ export function modifierLabels(isMac) {
     meta: 'Win / Super',
     ctrl: 'Ctrl',
     shift: 'Shift',
-    none: 'Без клавиши',
+    none: 'No key',
   };
 }
 

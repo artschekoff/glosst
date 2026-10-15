@@ -33,7 +33,7 @@ const FALLBACK = {
       try {
         return await chrome.runtime.sendMessage({ type: 'translate', text, targetLang: s.targetLang });
       } catch {
-        return { ok: false, code: 'internal', message: 'Расширение перезагружено, обновите страницу' };
+        return { ok: false, code: 'internal', message: 'Extension reloaded — refresh the page' };
       }
     },
     getLang: async () => {

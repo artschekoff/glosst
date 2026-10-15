@@ -7,13 +7,13 @@
 
 /** Что предлагаем, когда язык неизвестен. Список короткий намеренно. */
 export const LANG_CHOICES = [
-  { code: 'es', label: 'Испанский' },
-  { code: 'en', label: 'Английский' },
-  { code: 'pt', label: 'Португальский' },
-  { code: 'de', label: 'Немецкий' },
-  { code: 'fr', label: 'Французский' },
-  { code: 'it', label: 'Итальянский' },
-  { code: 'ru', label: 'Русский' },
+  { code: 'es', label: 'Spanish' },
+  { code: 'en', label: 'English' },
+  { code: 'pt', label: 'Portuguese' },
+  { code: 'de', label: 'German' },
+  { code: 'fr', label: 'French' },
+  { code: 'it', label: 'Italian' },
+  { code: 'ru', label: 'Russian' },
 ];
 
 /**

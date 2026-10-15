@@ -75,12 +75,12 @@ if (typeof chrome !== 'undefined' && chrome.storage) {
       const all = await chrome.storage.local.get(null);
       const keys = Object.keys(all).filter((k) => k.startsWith('glosst:'));
       await chrome.storage.local.remove(keys);
-      alert(`Удалено записей: ${keys.length}`);
+      alert(`Removed ${keys.length} cached translations`);
     });
 
     document.getElementById('clearLangs').addEventListener('click', async () => {
       const n = await clearSiteLangs(chrome.storage.local);
-      alert(`Забыто языков: ${n}. Сайты без <html lang> спросят заново.`);
+      alert(`Forgot ${n} site languages. Pages without <html lang> will ask again.`);
     });
   })();
 }

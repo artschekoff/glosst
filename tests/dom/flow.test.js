@@ -146,7 +146,7 @@ test('без html lang спрашивает язык и не переводит'
   const page = await open(browser, { answer: OK, savedLang: 'null' });
   await hover(page);
   await page.waitForFunction(
-    () => document.querySelector('glosst-tip')?.shadowRoot.textContent.includes('Язык'),
+    () => document.querySelector('glosst-tip')?.shadowRoot.textContent.includes('Language of this page'),
     null, { timeout: 3000 }
   );
 

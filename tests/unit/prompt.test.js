@@ -40,13 +40,15 @@ test('пометки может не быть', () => {
 });
 
 test('не-JSON в ответе — ошибка, а не тихий мусор', () => {
-  assert.throws(() => parseAnswer(answer('Привет, вот перевод')), /ответ/i);
+  // Матчер на свою ветку, а не общий: иначе тест прошёл бы и на чужом
+  // исключении, и мы бы не знали, какая именно проверка сработала.
+  assert.throws(() => parseAnswer(answer('Привет, вот перевод')), /not JSON/);
 });
 
 test('JSON без перевода — ошибка', () => {
-  assert.throws(() => parseAnswer(answer('{"note":"только пометка"}')), /ответ/i);
+  assert.throws(() => parseAnswer(answer('{"note":"только пометка"}')), /no translation/);
 });
 
 test('пустой список choices — ошибка', () => {
-  assert.throws(() => parseAnswer({ choices: [] }), /ответ/i);
+  assert.throws(() => parseAnswer({ choices: [] }), /no content/);
 });

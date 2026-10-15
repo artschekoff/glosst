@@ -23,18 +23,18 @@ async function classify(response) {
   const code = body?.error?.code ?? '';
 
   if (response.status === 401) {
-    return new TranslateError('unauthorized', 'Ключ не принят');
+    return new TranslateError('unauthorized', 'API key was rejected');
   }
 
   if (response.status === 429) {
     // Пустой баланс OpenAI отдаёт как 429. Это не превышение частоты:
     // ждать бесполезно, нужно пополнить счёт. Поэтому коды разные.
     return code === 'insufficient_quota'
-      ? new TranslateError('quota', 'Закончился баланс')
-      : new TranslateError('rate-limit', 'Слишком много запросов');
+      ? new TranslateError('quota', 'Out of credit — top up your OpenAI balance')
+      : new TranslateError('rate-limit', 'Too many requests — try again shortly');
   }
 
-  return new TranslateError('http', `Ответ сервера ${response.status}`);
+  return new TranslateError('http', `Server responded ${response.status}`);
 }
 
 /**
@@ -45,7 +45,7 @@ async function classify(response) {
 export async function translate({ text, targetLang, model, apiKey, wantNote, fetchImpl = fetch }) {
   if (!apiKey) {
     // До сети не доходим: без ключа запрос всё равно бессмысленный.
-    throw new TranslateError('no-key', 'Не задан ключ API');
+    throw new TranslateError('no-key', 'No API key set — open the extension settings');
   }
 
   const init = {
@@ -66,7 +66,7 @@ export async function translate({ text, targetLang, model, apiKey, wantNote, fet
       // Обрыв связи бывает разовым, поэтому одна повторная попытка.
       // Больше одной — человек уже ждёт слишком долго.
       if (attempt === 1) {
-        throw new TranslateError('network', 'Нет связи');
+        throw new TranslateError('network', 'No connection');
       }
     }
   }

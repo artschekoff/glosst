@@ -106,7 +106,7 @@ export function createTooltip(doc) {
 
   return {
     showLoading(rect) {
-      body.textContent = 'Перевожу…';
+      body.textContent = 'Translating…';
       place(rect);
     },
 
@@ -149,7 +149,7 @@ export function createTooltip(doc) {
 
       const ask = doc.createElement('div');
       ask.className = 'ask';
-      ask.textContent = 'Язык этой страницы?';
+      ask.textContent = 'Language of this page?';
       body.append(ask);
 
       for (const { code, label } of langs) {

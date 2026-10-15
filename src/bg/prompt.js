@@ -35,18 +35,18 @@ export function buildBody({ text, targetLang, model, wantNote }) {
 export function parseAnswer(json) {
   const content = json?.choices?.[0]?.message?.content;
   if (typeof content !== 'string') {
-    throw new Error('Неожиданный ответ модели: нет содержимого');
+    throw new Error('Unexpected model response: no content');
   }
 
   let parsed;
   try {
     parsed = JSON.parse(content);
   } catch {
-    throw new Error('Неожиданный ответ модели: не JSON');
+    throw new Error('Unexpected model response: not JSON');
   }
 
   if (typeof parsed.translation !== 'string' || parsed.translation === '') {
-    throw new Error('Неожиданный ответ модели: нет перевода');
+    throw new Error('Unexpected model response: no translation');
   }
 
   return {

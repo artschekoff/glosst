@@ -1,7 +1,7 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <meta charset="utf-8">
-<title>Glosst — настройки</title>
+<title>Glosst — Settings</title>
 <style>
   :root {
     color-scheme: light;
@@ -182,31 +182,31 @@
 
 <div class="card">
   <nav class="side">
-    <h2>Настройки</h2>
-    <button type="button" data-pane="translate" aria-selected="true">Перевод</button>
-    <button type="button" data-pane="trigger" aria-selected="false">Вызов</button>
-    <button type="button" data-pane="look" aria-selected="false">Вид</button>
-    <button type="button" data-pane="data" aria-selected="false">Данные</button>
+    <h2>Settings</h2>
+    <button type="button" data-pane="translate" aria-selected="true">Translation</button>
+    <button type="button" data-pane="trigger" aria-selected="false">Trigger</button>
+    <button type="button" data-pane="look" aria-selected="false">Appearance</button>
+    <button type="button" data-pane="data" aria-selected="false">Data</button>
   </nav>
 
   <section class="pane" id="pane-translate">
-    <h1>Перевод</h1>
-    <p class="lead">Кто переводит, на какой язык и насколько подробно.</p>
+    <h1>Translation</h1>
+    <p class="lead">Who translates, into what language, and how much detail.</p>
 
-    <div class="group">Доступ</div>
+    <div class="group">Access</div>
 
     <div class="row">
       <div class="text">
-        <div class="name"><label for="apiKey">Ключ OpenAI</label></div>
-        <div class="hint">Хранится только в этом браузере и уходит только в OpenAI.</div>
+        <div class="name"><label for="apiKey">OpenAI key</label></div>
+        <div class="hint">Stored only in this browser, and sent only to OpenAI.</div>
       </div>
       <div class="control"><input id="apiKey" type="password" placeholder="sk-…"></div>
     </div>
 
     <div class="row">
       <div class="text">
-        <div class="name"><label for="model">Модель</label></div>
-        <div class="hint">Можно выбрать из списка или вписать своё название: у провайдеров они меняются чаще, чем выходят версии расширения.</div>
+        <div class="name"><label for="model">Model</label></div>
+        <div class="hint">Pick one or type your own: providers rename models more often than this extension ships versions.</div>
       </div>
       <div class="control">
         <input id="model" list="models" placeholder="gpt-4o-mini">
@@ -218,33 +218,33 @@
       </div>
     </div>
 
-    <div class="group">Язык и подача</div>
+    <div class="group">Language and detail</div>
 
     <div class="row">
       <div class="text">
-        <div class="name"><label for="targetLang">Переводить на</label></div>
-        <div class="hint">Код языка: ru, en, es. Язык оригинала определяется сам, а если страница его не объявила — расширение спросит.</div>
+        <div class="name"><label for="targetLang">Translate into</label></div>
+        <div class="hint">Language code: en, es, ru. The source language is detected, and if the page does not declare one the extension asks.</div>
       </div>
       <div class="control"><input id="targetLang" placeholder="ru"></div>
     </div>
 
     <div class="row">
       <div class="text">
-        <div class="name"><label for="wantNote">Пояснять грамматику</label></div>
-        <div class="hint">Короткая пометка о том, что в месте легко понять неправильно: форма глагола, идиома, местный оборот.</div>
+        <div class="name"><label for="wantNote">Explain grammar</label></div>
+        <div class="hint">A short note on what is easy to misread here: a verb form, an idiom, a local turn of phrase.</div>
       </div>
       <div class="control"><input id="wantNote" type="checkbox"></div>
     </div>
   </section>
 
   <section class="pane" id="pane-trigger" hidden>
-    <h1>Вызов</h1>
-    <p class="lead">Когда расширение вмешивается и что берёт под курсором.</p>
+    <h1>Trigger</h1>
+    <p class="lead">When the extension steps in, and what it takes under the cursor.</p>
 
     <div class="row">
       <div class="text">
-        <div class="name"><label for="modifier">Клавиша</label></div>
-        <div class="hint">Без неё подсказки выскакивают при обычном чтении: курсор почти всегда лежит где-то в тексте.</div>
+        <div class="name"><label for="modifier">Key</label></div>
+        <div class="hint">Without one, tooltips pop up during ordinary reading — the cursor almost always rests somewhere in text.</div>
       </div>
       <div class="control">
         <select id="modifier">
@@ -252,82 +252,82 @@
           <option value="ctrl">Ctrl</option>
           <option value="meta">Win / Super</option>
           <option value="shift">Shift</option>
-          <option value="none">Без клавиши</option>
+          <option value="none">No key</option>
         </select>
       </div>
     </div>
 
     <div class="row">
       <div class="text">
-        <div class="name"><label for="dwellMs">Задержка, мс</label></div>
-        <div class="hint">Сколько курсор должен простоять на месте. Без задержки проводка мышью через абзац стоила бы десятка запросов.</div>
+        <div class="name"><label for="dwellMs">Delay, ms</label></div>
+        <div class="hint">How long the cursor must rest. Without it, sweeping across a paragraph would cost a dozen requests.</div>
       </div>
       <div class="control"><input id="dwellMs" type="number" min="100" max="2000" step="50"></div>
     </div>
 
     <div class="row">
       <div class="text">
-        <div class="name"><label for="granularity">Что брать под курсором</label></div>
-        <div class="hint">Абзацем выходит меньше запросов, но каждый дороже.</div>
+        <div class="name"><label for="granularity">What to take</label></div>
+        <div class="hint">Paragraphs mean fewer requests, each more expensive.</div>
       </div>
       <div class="control">
         <select id="granularity">
-          <option value="sentence">Предложение</option>
-          <option value="paragraph">Абзац</option>
+          <option value="sentence">Sentence</option>
+          <option value="paragraph">Paragraph</option>
         </select>
       </div>
     </div>
   </section>
 
   <section class="pane" id="pane-look" hidden>
-    <h1>Вид</h1>
-    <p class="lead">Цвета подсветки. На тёмных темах и цветных фонах умолчания могут читаться плохо.</p>
+    <h1>Appearance</h1>
+    <p class="lead">Highlight colours. On dark themes and coloured backgrounds the defaults can read poorly.</p>
 
     <div class="row">
       <div class="text">
-        <div class="name">Подсветка</div>
-        <div class="hint">Жёлтый — место под курсором, зелёный — уже разобранное за этот сеанс, красный — где перевод не получился.</div>
+        <div class="name">Highlight</div>
+        <div class="hint">Yellow is the place under the cursor, green what you already worked through this session, red where a translation failed.</div>
       </div>
       <div class="control colors">
-        <label>Под курсором<input id="colorActive" type="color"></label>
-        <label>Переведено<input id="colorSeen" type="color"></label>
-        <label>Ошибка<input id="colorError" type="color"></label>
+        <label>Under cursor<input id="colorActive" type="color"></label>
+        <label>Translated<input id="colorSeen" type="color"></label>
+        <label>Failed<input id="colorError" type="color"></label>
       </div>
     </div>
   </section>
 
   <section class="pane" id="pane-data" hidden>
-    <h1>Данные</h1>
-    <p class="lead">Что расширение помнит и как это забыть.</p>
+    <h1>Data</h1>
+    <p class="lead">What the extension remembers, and how to make it forget.</p>
 
     <div class="row">
       <div class="text">
-        <div class="name"><label for="ttlDays">Хранить переводы, дней</label></div>
-        <div class="hint">Переводы запоминаются по самой фразе, а не по адресу страницы: одна и та же фраза на разных сайтах оплачивается один раз.</div>
+        <div class="name"><label for="ttlDays">Keep translations, days</label></div>
+        <div class="hint">Translations are keyed by the phrase itself, not the page address: the same sentence on different sites is paid for once.</div>
       </div>
       <div class="control"><input id="ttlDays" type="number" min="1" max="365"></div>
     </div>
 
     <div class="row">
       <div class="text">
-        <div class="name">Кэш переводов</div>
-        <div class="hint">После очистки всё, что встретится заново, будет оплачено заново.</div>
+        <div class="name">Translation cache</div>
+        <div class="hint">After clearing, anything you meet again is paid for again.</div>
       </div>
-      <div class="control"><button type="button" id="clearCache" class="danger">Очистить кэш</button></div>
+      <div class="control"><button type="button" id="clearCache" class="danger">Clear cache</button></div>
     </div>
 
     <div class="row">
       <div class="text">
-        <div class="name">Языки сайтов</div>
-        <div class="hint">Выбор языка запоминается по домену для страниц, которые язык не объявляют. После сброса расширение спросит заново.</div>
+        <div class="name">Site languages</div>
+        <div class="hint">The chosen language is remembered per domain for pages that do not declare one. After a reset the extension asks again.</div>
       </div>
-      <div class="control"><button type="button" id="clearLangs" class="danger">Забыть языки</button></div>
+      <div class="control"><button type="button" id="clearLangs" class="danger">Forget languages</button></div>
     </div>
   </section>
 
   <div class="foot">
-    <span id="saved" hidden>Сохранено</span>
-    <button type="button" id="save">Сохранить</button>
+    <span id="saved" hidden>Saved</span>
+    <button type="button" id="save">Save</button>
   </div>
 </div>
 
